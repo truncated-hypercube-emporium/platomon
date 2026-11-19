@@ -38,6 +38,8 @@ jobs:
         run: cargo build --all-targets ${{ env.FLAGS }}
       - name: Test
         run: cargo test ${{ env.FLAGS }}
+      - name: Timing test (alone, nothing else running)
+        run: cargo test ${{ env.FLAGS }} --lib -- --ignored --test-threads=1
       - name: Clippy
         run: cargo clippy --all-targets ${{ env.FLAGS }} -- -D warnings
       - name: Smoke test (no terminal needed)
