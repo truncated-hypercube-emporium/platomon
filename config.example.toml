@@ -1,0 +1,47 @@
+show = [
+    "cpu",
+    "ram",
+    "disk",
+    "net",
+    "gpu",
+]
+fps_min = 5.0
+fps_max = 150.0
+fps_curve = "sqrt"
+fps_slew = 60.0
+spp = 2
+bounces = 2
+max_steps = 64
+max_dist = 50.0
+adaptive_quality = true
+ramp = " .:-=+*#%@"
+char_aspect = 0.5
+exposure = 1.0
+show_stats = false
+aspect = "fill"
+aspect_mode = "letterbox"
+camera = "static"
+orbit_period = 60.0
+orbit_dir = "random"
+orbit_bob = 0.3
+min_scale = 0.45
+max_scale = 1.0
+max_spin = 3.0
+idle_spin = 0.15
+smoothing_tau = 0.35
+poll_hz = 4.0
+rate_floor_bytes = 1000000.0
+peak_decay_per_sec = 0.01
+
+[solids]
+
+[rings]
+
+[weights]
+cpu = 1.0
+ram = 1.0
+disk = 1.0
+net = 1.0
+gpu = 1.0
+nic = 1.0
+disk_dev = 1.0

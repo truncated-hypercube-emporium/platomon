@@ -1,0 +1,39 @@
+[package]
+name = "platomon"
+version = "1.1.0"
+edition = "2024"
+description = "Platonic-solid ASCII system monitor: five path-traced solids, one per resource"
+license = "MIT OR Apache-2.0"
+
+[features]
+default = ["nvidia"]
+nvidia = ["dep:nvml-wrapper"]
+
+[dependencies]
+clap = { version = "4.6.8", features = ["derive"] }
+crossterm = "0.29.0"
+dirs = "7.0.0"
+fastrand = "2.5.0"
+glam = "0.34.3"
+nvml-wrapper = { version = "0.13.0", optional = true }
+rayon = "1.12.0"
+serde = { version = "1.0.229", features = ["derive"] }
+sysinfo = { version = "0.40.4", default-features = false, features = ["system", "disk", "network", "gpu"] }
+toml = "1.2.1"
+
+[dev-dependencies]
+criterion = "0.8.2"
+
+[[bench]]
+name = "render"
+harness = false
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.bench]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

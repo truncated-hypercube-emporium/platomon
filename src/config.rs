@@ -1,0 +1,418 @@
+//! Configuration: defaults, TOML loading, sanitising and slot resolution.
+
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use crate::aspect::AspectMode;
+use crate::clock::FpsCurve;
+use crate::metrics::{MetricKind, MetricSpec};
+use crate::scene::camera::{CameraMode, OrbitDir};
+use crate::scene::sdf::SolidKind;
+
+/// Most solids shown at once.
+pub const MAX_SLOTS: usize = 16;
+
+/// Per-metric-kind weights for the activity score (applies to every instance).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Weights {
+    pub cpu: f32,
+    pub ram: f32,
+    pub disk: f32,
+    pub net: f32,
+    pub gpu: f32,
+    pub nic: f32,
+    pub disk_dev: f32,
+}
+
+impl Default for Weights {
+    fn default() -> Self {
+        Self { cpu: 1.0, ram: 1.0, disk: 1.0, net: 1.0, gpu: 1.0, nic: 1.0, disk_dev: 1.0 }
+    }
+}
+
+impl Weights {
+    pub fn get(&self, k: MetricKind) -> f32 {
+        match k {
+            MetricKind::Cpu => self.cpu,
+            MetricKind::Ram => self.ram,
+            MetricKind::Disk => self.disk,
+            MetricKind::Net => self.net,
+            MetricKind::Gpu => self.gpu,
+            MetricKind::Nic => self.nic,
+            MetricKind::DiskDev => self.disk_dev,
+        }
+    }
+}
+
+/// Every tunable, with defaults.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Config {
+    // --- what to show ---
+    /// Metrics, one solid each: `cpu`, `ram`, `disk`, `net`, `gpu`, `nic[:NAME]`, `disk-dev[:NAME]`.
+    pub show: Vec<String>,
+
+    // --- frame rate ---
+    pub fps_min: f32,
+    pub fps_max: f32,
+    pub fps_curve: FpsCurve,
+    /// Maximum change of the target fps, in fps per second.
+    pub fps_slew: f32,
+
+    // --- renderer ---
+    pub spp: u32,
+    pub bounces: u32,
+    pub max_steps: u32,
+    pub max_dist: f32,
+    /// Drop spp / bounces when the frame budget is missed.
+    pub adaptive_quality: bool,
+
+    // --- output ---
+    pub ramp: String,
+    /// Width / height of one terminal cell.
+    pub char_aspect: f32,
+    pub exposure: f32,
+    pub show_stats: bool,
+    /// `fill`, a preset (`vga`, `wxga`, `fhd`, `uwqhd`, ...) or `W:H`.
+    pub aspect: String,
+    pub aspect_mode: AspectMode,
+
+    // --- camera ---
+    pub camera: CameraMode,
+    /// Seconds per revolution.
+    pub orbit_period: f32,
+    pub orbit_dir: OrbitDir,
+    /// World units; unset = fit the layout.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orbit_radius: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orbit_height: Option<f32>,
+    /// Vertical drift amplitude while orbiting.
+    pub orbit_bob: f32,
+    /// RNG seed for random choices (orbit direction); unset = random.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+
+    // --- animation ---
+    pub min_scale: f32,
+    pub max_scale: f32,
+    /// rad/s at full activity.
+    pub max_spin: f32,
+    /// rad/s at zero activity.
+    pub idle_spin: f32,
+    /// EMA time constant for all smoothed signals, seconds.
+    pub smoothing_tau: f32,
+
+    // --- collector / metrics ---
+    pub poll_hz: f32,
+    /// Floor for rolling peaks of rate metrics, bytes/s.
+    pub rate_floor_bytes: f64,
+    /// Fraction of the rolling peak lost per second.
+    pub peak_decay_per_sec: f64,
+
+    // --- tables (must stay last for TOML) ---
+    /// metric key → solid id, e.g. `cpu = "truncated-icosahedron"`.
+    pub solids: BTreeMap<String, String>,
+    /// metric key → ring index (0 = innermost).
+    pub rings: BTreeMap<String, u32>,
+    pub weights: Weights,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            show: ["cpu", "ram", "disk", "net", "gpu"].map(String::from).to_vec(),
+            fps_min: 5.0,
+            fps_max: 150.0,
+            fps_curve: FpsCurve::Sqrt,
+            fps_slew: 60.0,
+            spp: 2,
+            bounces: 2,
+            max_steps: 64,
+            max_dist: 50.0,
+            adaptive_quality: true,
+            ramp: " .:-=+*#%@".to_string(),
+            char_aspect: 0.5,
+            exposure: 1.0,
+            show_stats: false,
+            aspect: "fill".to_string(),
+            aspect_mode: AspectMode::Letterbox,
+            camera: CameraMode::Static,
+            orbit_period: 60.0,
+            orbit_dir: OrbitDir::Random,
+            orbit_radius: None,
+            orbit_height: None,
+            orbit_bob: 0.3,
+            seed: None,
+            min_scale: 0.45,
+            max_scale: 1.0,
+            max_spin: 3.0,
+            idle_spin: 0.15,
+            smoothing_tau: 0.35,
+            poll_hz: 4.0,
+            rate_floor_bytes: 1_000_000.0,
+            peak_decay_per_sec: 0.01,
+            solids: BTreeMap::new(),
+            rings: BTreeMap::new(),
+            weights: Weights::default(),
+        }
+    }
+}
+
+/// One displayed solid.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SlotSpec {
+    pub metric: MetricSpec,
+    pub solid: SolidKind,
+    /// Requested ring; `None` = automatic.
+    pub ring: Option<u32>,
+}
+
+fn finite_or(v: f32, d: f32) -> f32 {
+    if v.is_finite() { v } else { d }
+}
+
+/// Find the table entry for `spec`: an exact key wins over a kind-wide key
+/// (`nic` applies to every `nic:*` slot).
+fn lookup<'a, V>(table: &'a [(MetricSpec, V)], spec: &MetricSpec) -> Option<&'a V> {
+    table
+        .iter()
+        .find(|(k, _)| k == spec)
+        .or_else(|| table.iter().find(|(k, _)| k.instance.is_none() && k.kind == spec.kind))
+        .map(|(_, v)| v)
+}
+
+impl Config {
+    /// `<platform config dir>/platomon/config.toml`
+    pub fn default_path() -> Option<PathBuf> {
+        dirs::config_dir().map(|d| d.join("platomon").join("config.toml"))
+    }
+
+    pub fn from_toml(text: &str) -> Result<Self, String> {
+        toml::from_str(text).map_err(|e| e.to_string())
+    }
+
+    /// Load from an explicit path (must exist), else the default path if it
+    /// exists, else defaults.
+    pub fn load(explicit: Option<&Path>) -> Result<Self, String> {
+        let path = match explicit {
+            Some(p) => p.to_path_buf(),
+            None => match Self::default_path() {
+                Some(p) if p.is_file() => p,
+                _ => return Ok(Self::default()),
+            },
+        };
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| format!("cannot read config {}: {e}", path.display()))?;
+        Self::from_toml(&text).map_err(|e| format!("invalid config {}: {e}", path.display()))
+    }
+
+    pub fn to_toml(&self) -> String {
+        toml::to_string_pretty(self).unwrap_or_else(|e| format!("# cannot serialise config: {e}\n"))
+    }
+
+    /// Clamp everything into a usable range. Never fails.
+    pub fn sanitize(&mut self) {
+        let d = Self::default();
+        self.fps_min = finite_or(self.fps_min, d.fps_min).max(1.0);
+        self.fps_max = finite_or(self.fps_max, d.fps_max).max(self.fps_min);
+        self.fps_slew = finite_or(self.fps_slew, d.fps_slew).max(0.1);
+
+        self.spp = self.spp.clamp(1, 64);
+        self.bounces = self.bounces.min(8);
+        self.max_steps = self.max_steps.clamp(8, 1024);
+        self.max_dist = finite_or(self.max_dist, d.max_dist).clamp(5.0, 1000.0);
+
+        if self.ramp.chars().count() < 2 {
+            self.ramp = d.ramp.clone();
+        }
+        self.char_aspect = finite_or(self.char_aspect, d.char_aspect).clamp(0.1, 4.0);
+        self.exposure = finite_or(self.exposure, d.exposure).clamp(0.01, 100.0);
+
+        self.orbit_period = finite_or(self.orbit_period, d.orbit_period).clamp(2.0, 86_400.0);
+        self.orbit_bob = finite_or(self.orbit_bob, d.orbit_bob).clamp(0.0, 10.0);
+        for v in [&mut self.orbit_radius, &mut self.orbit_height] {
+            *v = v.filter(|x| x.is_finite()).map(|x| x.clamp(0.5, 500.0));
+        }
+
+        self.min_scale = finite_or(self.min_scale, d.min_scale).clamp(0.05, 1.0);
+        self.max_scale = finite_or(self.max_scale, d.max_scale).clamp(self.min_scale, 1.0);
+        self.idle_spin = finite_or(self.idle_spin, d.idle_spin).max(0.0);
+        self.max_spin = finite_or(self.max_spin, d.max_spin).max(self.idle_spin);
+        self.smoothing_tau = finite_or(self.smoothing_tau, d.smoothing_tau).clamp(0.01, 10.0);
+
+        self.poll_hz = finite_or(self.poll_hz, d.poll_hz).clamp(0.5, 20.0);
+        if !self.rate_floor_bytes.is_finite() || self.rate_floor_bytes < 1.0 {
+            self.rate_floor_bytes = d.rate_floor_bytes;
+        }
+        if !self.peak_decay_per_sec.is_finite() {
+            self.peak_decay_per_sec = d.peak_decay_per_sec;
+        }
+        self.peak_decay_per_sec = self.peak_decay_per_sec.clamp(0.0, 0.99);
+
+        let w = &mut self.weights;
+        for v in [&mut w.cpu, &mut w.ram, &mut w.disk, &mut w.net, &mut w.gpu, &mut w.nic, &mut w.disk_dev] {
+            *v = finite_or(*v, 1.0).max(0.0);
+        }
+    }
+
+    /// Resolve `show`, `solids` and `rings` into slots. Errors are meant for the user.
+    pub fn resolve_slots(&self) -> Result<Vec<SlotSpec>, String> {
+        let mut specs: Vec<MetricSpec> = Vec::new();
+        for s in &self.show {
+            let spec = MetricSpec::parse(s)?;
+            if specs.contains(&spec) {
+                return Err(format!("metric '{}' listed twice in show", spec.key()));
+            }
+            specs.push(spec);
+        }
+        if specs.is_empty() {
+            return Err("nothing to show: --show needs at least one metric".into());
+        }
+        if specs.len() > MAX_SLOTS {
+            return Err(format!("at most {MAX_SLOTS} metrics can be shown (got {})", specs.len()));
+        }
+
+        let parse_keys = |keys: Vec<&String>, what: &str| -> Result<Vec<MetricSpec>, String> {
+            keys.into_iter()
+                .map(|k| {
+                    let spec = MetricSpec::parse(k).map_err(|e| format!("{what} '{k}': {e}"))?;
+                    let used = specs.iter().any(|s| *s == spec || (spec.instance.is_none() && s.kind == spec.kind));
+                    if used { Ok(spec) } else { Err(format!("{what} '{k}': metric is not in show")) }
+                })
+                .collect()
+        };
+
+        let solid_keys = parse_keys(self.solids.keys().collect(), "solid for")?;
+        let mut solids = Vec::new();
+        for (spec, id) in solid_keys.into_iter().zip(self.solids.values()) {
+            let kind = SolidKind::from_id(id).ok_or_else(|| format!("unknown solid '{id}' (see --list solids)"))?;
+            solids.push((spec, kind));
+        }
+        let ring_keys = parse_keys(self.rings.keys().collect(), "ring for")?;
+        let rings: Vec<(MetricSpec, u32)> = ring_keys.into_iter().zip(self.rings.values().copied()).collect();
+
+        Ok(specs
+            .into_iter()
+            .map(|m| SlotSpec {
+                solid: lookup(&solids, &m).copied().unwrap_or(m.kind.default_solid()),
+                ring: lookup(&rings, &m).copied(),
+                metric: m,
+            })
+            .collect())
+    }
+}
+
+/// Split `KEY=VALUE` at the last `=` (keys like `disk-dev:C:\` contain no `=`).
+pub fn split_assignment(s: &str) -> Result<(String, String), String> {
+    let (k, v) = s.rsplit_once('=').ok_or_else(|| format!("expected METRIC=VALUE, got '{s}'"))?;
+    let (k, v) = (k.trim(), v.trim());
+    if k.is_empty() || v.is_empty() {
+        return Err(format!("expected METRIC=VALUE, got '{s}'"));
+    }
+    Ok((k.to_string(), v.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_roundtrip_through_toml() {
+        let mut c = Config::default();
+        c.solids.insert("cpu".into(), "cube".into());
+        c.rings.insert("ram".into(), 1);
+        c.orbit_radius = Some(12.0);
+        let back = Config::from_toml(&c.to_toml()).unwrap();
+        assert_eq!(c, back);
+    }
+
+    #[test]
+    fn partial_toml_uses_defaults() {
+        let c = Config::from_toml("spp = 4\ncamera = \"orbit\"\n[weights]\ngpu = 0.0\n[solids]\n\"nic:eth0\" = \"cube\"\n")
+            .unwrap();
+        assert_eq!(c.spp, 4);
+        assert_eq!(c.camera, CameraMode::Orbit);
+        assert_eq!(c.weights.gpu, 0.0);
+        assert_eq!(c.weights.cpu, 1.0);
+        assert_eq!(c.solids["nic:eth0"], "cube");
+        assert_eq!(c.show.len(), 5);
+    }
+
+    #[test]
+    fn unknown_keys_rejected() {
+        assert!(Config::from_toml("nope = 1").is_err());
+        assert!(Config::from_toml("camera = \"spin\"").is_err());
+    }
+
+    #[test]
+    fn fps_bounds_clamped() {
+        let mut c = Config { fps_min: 0.0, fps_max: -3.0, ..Config::default() };
+        c.sanitize();
+        assert_eq!((c.fps_min, c.fps_max), (1.0, 1.0));
+        let mut c = Config { fps_min: 200.0, fps_max: 100.0, ..Config::default() };
+        c.sanitize();
+        assert!(c.fps_min == 200.0 && c.fps_min <= c.fps_max);
+    }
+
+    #[test]
+    fn bad_values_replaced() {
+        let mut c = Config { ramp: "x".into(), spp: 0, orbit_radius: Some(f32::NAN), ..Config::default() };
+        c.sanitize();
+        assert_eq!(c.ramp, Config::default().ramp);
+        assert_eq!(c.spp, 1);
+        assert_eq!(c.orbit_radius, None);
+    }
+
+    #[test]
+    fn default_slots() {
+        let s = Config::default().resolve_slots().unwrap();
+        let solids: Vec<_> = s.iter().map(|x| x.solid).collect();
+        assert_eq!(
+            solids,
+            [
+                SolidKind::Icosahedron,
+                SolidKind::Cube,
+                SolidKind::Octahedron,
+                SolidKind::Tetrahedron,
+                SolidKind::Dodecahedron
+            ]
+        );
+        assert!(s.iter().all(|x| x.ring.is_none()));
+    }
+
+    #[test]
+    fn slot_overrides_and_errors() {
+        let mut c = Config { show: vec!["cpu".into(), "nic:eth0".into(), "nic:wlan0".into()], ..Config::default() };
+        c.solids.insert("nic".into(), "cube".into());
+        c.solids.insert("nic:wlan0".into(), "rhombic-triacontahedron".into());
+        c.rings.insert("NIC".into(), 2);
+        let s = c.resolve_slots().unwrap();
+        assert_eq!(s[1].solid, SolidKind::Cube, "kind-wide key");
+        assert_eq!(s[2].solid, SolidKind::RhombicTriacontahedron, "exact key wins");
+        assert_eq!((s[0].ring, s[1].ring, s[2].ring), (None, Some(2), Some(2)));
+
+        let bad = |f: &dyn Fn(&mut Config)| {
+            let mut c = Config::default();
+            f(&mut c);
+            c.resolve_slots().unwrap_err()
+        };
+        assert!(bad(&|c| c.show = vec!["cpu".into(), "cpu".into()]).contains("twice"));
+        assert!(bad(&|c| c.show.clear()).contains("nothing"));
+        assert!(bad(&|c| c.show = vec!["cpu-temp".into()]).contains("unknown metric"));
+        assert!(bad(&|c| c.show = (0..17).map(|i| format!("nic:n{i}")).collect()).contains("at most"));
+        assert!(bad(&|c| _ = c.solids.insert("cpu".into(), "sphere".into())).contains("unknown solid"));
+        assert!(bad(&|c| _ = c.solids.insert("nic".into(), "cube".into())).contains("not in show"));
+        assert!(bad(&|c| _ = c.rings.insert("gpu:0".into(), 1)).contains("takes no"));
+    }
+
+    #[test]
+    fn assignment_split() {
+        assert_eq!(split_assignment("cpu=cube").unwrap(), ("cpu".into(), "cube".into()));
+        assert_eq!(split_assignment(r"disk-dev:C:\=cube").unwrap(), (r"disk-dev:C:\".into(), "cube".into()));
+        assert!(split_assignment("cpu").is_err());
+        assert!(split_assignment("cpu=").is_err());
+    }
+}
