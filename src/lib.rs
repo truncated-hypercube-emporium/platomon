@@ -9,6 +9,7 @@ pub mod clock;
 pub mod collector;
 pub mod config;
 pub mod metrics;
+pub mod overlay;
 pub mod render;
 pub mod scene;
 pub mod ui;

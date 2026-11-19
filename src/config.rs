@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::aspect::AspectMode;
 use crate::clock::FpsCurve;
 use crate::metrics::{MetricKind, MetricSpec};
+use crate::overlay::{LEGEND_SIZE_MAX, LEGEND_SIZE_MIN, LegendParams, LegendPos};
 use crate::scene::camera::{CameraMode, OrbitDir};
 use crate::scene::ground::{self, GroundParams, Pattern, Spin};
 use crate::scene::sdf::SolidKind;
@@ -79,6 +80,18 @@ pub struct Config {
     /// `fill`, a preset (`vga`, `wxga`, `fhd`, `uwqhd`, ...) or `W:H`.
     pub aspect: String,
     pub aspect_mode: AspectMode,
+
+    // --- overlays ---
+    /// Legend of solid wireframes and their metrics (key `l`).
+    pub legend: bool,
+    /// 1..=5: 1–2 terminal text, 3–5 block letters; icons grow with it.
+    pub legend_size: u8,
+    /// Legend background: 0 = see-through, 1 = solid.
+    pub legend_opacity: f32,
+    /// top-left, top-right, bottom-left, bottom-right.
+    pub legend_pos: LegendPos,
+    /// Inverted-luminosity wireframe over every solid (key `w`).
+    pub wireframe: bool,
 
     // --- camera ---
     pub camera: CameraMode,
@@ -158,6 +171,11 @@ impl Default for Config {
             show_stats: false,
             aspect: "fill".to_string(),
             aspect_mode: AspectMode::Letterbox,
+            legend: false,
+            legend_size: LegendParams::default().size,
+            legend_opacity: LegendParams::default().opacity,
+            legend_pos: LegendPos::TopLeft,
+            wireframe: false,
             camera: CameraMode::Static,
             orbit_period: 60.0,
             orbit_dir: OrbitDir::Random,
@@ -259,6 +277,9 @@ impl Config {
         self.char_aspect = finite_or(self.char_aspect, d.char_aspect).clamp(0.1, 4.0);
         self.exposure = finite_or(self.exposure, d.exposure).clamp(0.01, 100.0);
 
+        self.legend_size = self.legend_size.clamp(LEGEND_SIZE_MIN, LEGEND_SIZE_MAX);
+        self.legend_opacity = finite_or(self.legend_opacity, d.legend_opacity).clamp(0.0, 1.0);
+
         self.orbit_period = finite_or(self.orbit_period, d.orbit_period).clamp(2.0, 86_400.0);
         self.orbit_bob = finite_or(self.orbit_bob, d.orbit_bob).clamp(0.0, 10.0);
 
@@ -308,6 +329,10 @@ impl Config {
             rotate: self.bg_rotate,
             rotate_period: self.bg_rotate_period,
         }
+    }
+
+    pub fn legend_params(&self) -> LegendParams {
+        LegendParams { size: self.legend_size, opacity: self.legend_opacity, pos: self.legend_pos }
     }
 
     /// Resolve `show`, `solids` and `rings` into slots. Errors are meant for the user.
@@ -473,6 +498,19 @@ mod tests {
         c.sanitize();
         assert_eq!((c.bg_lum, c.bg_contrast, c.bg_scroll), (10.0, 0.0, [0.0, 3.0]));
         assert_eq!(Config::default().bg_lum, 5.0, "default reproduces the original ground");
+    }
+
+    #[test]
+    fn overlay_settings() {
+        let c = Config::from_toml("legend = true\nlegend_pos = \"bottom-right\"\nlegend_size = 4\nwireframe = true\n")
+            .unwrap();
+        let p = c.legend_params();
+        assert!(c.legend && c.wireframe);
+        assert_eq!((p.pos, p.size), (LegendPos::BottomRight, 4));
+        let mut c = Config { legend_size: 9, legend_opacity: f32::NAN, ..Config::default() };
+        c.sanitize();
+        assert_eq!((c.legend_size, c.legend_opacity), (LEGEND_SIZE_MAX, 0.85));
+        assert!(Config::from_toml("legend_pos = \"middle\"").is_err());
     }
 
     #[test]

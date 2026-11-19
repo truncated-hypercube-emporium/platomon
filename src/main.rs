@@ -10,7 +10,8 @@ use platomon::aspect::{self, AspectMode, PRESETS};
 use platomon::clock::{self, FrameClock, SPIN_MARGIN};
 use platomon::collector::{Collector, gpu::GpuSampler, system::SystemSampler};
 use platomon::config::{Config, SlotSpec, split_assignment};
-use platomon::metrics::{Channel, MetricKind, MetricsState, activity_score};
+use platomon::metrics::{Channel, MetricKind, MetricsState, Reading, activity_score};
+use platomon::overlay::{LegendPos, OverlayOptions, Overlays};
 use platomon::render::{QualityGovernor, RenderSettings, Renderer, TraceSettings};
 use platomon::scene::camera::{CameraMode, CameraParams, OrbitDir};
 use platomon::scene::ground::{Pattern, Spin, parse_vec2};
@@ -33,7 +34,7 @@ enum ListWhat {
 /// Platonic-solid ASCII system monitor.
 ///
 /// One path-traced solid per metric, on concentric rings. Keys: s = stats bar,
-/// q / Esc / Ctrl-C = quit.
+/// l = legend, w = wireframe, q / Esc / Ctrl-C = quit.
 #[derive(Parser, Debug)]
 #[command(name = "platomon", version, about, long_about = None)]
 struct Cli {
@@ -52,6 +53,9 @@ struct Cli {
     /// Seconds of animation (camera, background motion) to simulate before the snapshot.
     #[arg(long, value_name = "SECS", default_value_t = 0.3)]
     snapshot_time: f32,
+    /// Append one CSV line per second (fps, quality, render time, grid) to PATH while running.
+    #[arg(long, value_name = "PATH")]
+    perf_log: Option<PathBuf>,
     /// Show the stats bar at start.
     #[arg(long)]
     stats: bool,
@@ -86,6 +90,23 @@ struct Cli {
     /// Terminal cell width / height.
     #[arg(long, value_name = "FLOAT")]
     char_aspect: Option<f32>,
+
+    // ---- overlays
+    /// Show the legend: a wireframe of each solid with its metric (key l).
+    #[arg(long)]
+    legend: bool,
+    /// Legend font size 1..5: 1-2 terminal text, 3-5 block letters (1-3 cells per pixel). Implies --legend.
+    #[arg(long, value_name = "1..5")]
+    legend_size: Option<u8>,
+    /// Legend background opacity 0..1 (0 = see-through, 1 = solid). Implies --legend.
+    #[arg(long, value_name = "0..1")]
+    legend_opacity: Option<f32>,
+    /// Legend corner: tl, tr, bl, br (or top-left, ...). Implies --legend.
+    #[arg(long, value_name = "CORNER")]
+    legend_pos: Option<LegendPos>,
+    /// Overlay each solid's wireframe in inverted luminosity (key w).
+    #[arg(long)]
+    wireframe: bool,
 
     // ---- display ratio
     /// Picture ratio: fill, a preset (vga, wxga, fhd, uwqhd, ... see --list aspects) or W:H.
@@ -159,6 +180,13 @@ fn apply_cli(cfg: &mut Config, cli: &Cli) -> Result<(), String> {
     }
     set!(spp, bounces, fps_min, fps_max, ramp, char_aspect, aspect, aspect_mode, camera, orbit_period, orbit_dir, orbit_bob);
     set!(bg_lum, bg_pattern, bg_contrast, bg_scale, bg_sway, bg_sway_period, bg_rotate, bg_rotate_period);
+    set!(legend_size, legend_opacity, legend_pos);
+    if cli.legend || cli.legend_size.is_some() || cli.legend_opacity.is_some() || cli.legend_pos.is_some() {
+        cfg.legend = true;
+    }
+    if cli.wireframe {
+        cfg.wireframe = true;
+    }
     if let Some(s) = &cli.bg_scroll {
         cfg.bg_scroll = parse_vec2(s).map_err(|e| format!("--bg-scroll: {e}"))?;
     }
@@ -218,7 +246,11 @@ fn main() {
         return;
     }
 
-    if let Err(e) = run(&cfg, &slots, ratio) {
+    let perf = match cli.perf_log.as_deref().map(PerfLog::create).transpose() {
+        Ok(p) => p,
+        Err(e) => fail(format!("--perf-log: {e}")),
+    };
+    if let Err(e) = run(&cfg, &slots, ratio, perf) {
         restore_terminal();
         eprintln!("platomon: {e}");
         std::process::exit(1);
@@ -343,10 +375,31 @@ fn snapshot(cfg: &Config, slots: &[SlotSpec], ratio: Option<f32>, w: usize, h: u
     }
     let vp = aspect::viewport(w, h, ratio, cfg.aspect_mode, cfg.char_aspect);
     let mut r = Renderer::new();
-    let buf = r.render(&scene, vp.w, vp.h, &render_settings(cfg, ratio));
+    r.render(&scene, vp.w, vp.h, &render_settings(cfg, ratio));
+    let labels: Vec<String> =
+        slots.iter().zip(&ch).map(|(s, c)| format!("{} {:.0}%", s.metric.key().to_uppercase(), c.level * 100.0)).collect();
+    let legend = cfg.legend_params();
+    let opt = OverlayOptions {
+        wireframe: cfg.wireframe,
+        legend: cfg.legend.then_some(&legend),
+        labels: &labels,
+        char_aspect: cfg.char_aspect,
+        ramp: &Ramp::new(&cfg.ramp),
+        exposure: cfg.exposure,
+    };
+    let mut overlays = Overlays::new(&scene);
     let mut s = String::new();
-    ascii::compose_plain(buf, vp.w, vp.h, &Ramp::new(&cfg.ramp), cfg.exposure, &mut s);
+    if let Some(view) = r.view() {
+        let cells = overlays.compose(&view, vp.w, vp.h, &scene, &opt);
+        ascii::compose_plain(cells, vp.w, vp.h, &mut s);
+    }
     s
+}
+
+/// Legend labels from live readings (compact for block letters).
+fn legend_labels(readings: &[&Reading], size: u8, out: &mut Vec<String>) {
+    out.clear();
+    out.extend(readings.iter().map(|r| if size >= 3 { ui::short_label(r) } else { ui::segment(r) }));
 }
 
 // ------------------------------------------------------------------ terminal
@@ -396,7 +449,106 @@ fn install_panic_hook() {
 
 // ------------------------------------------------------------------ main loop
 
-fn run(cfg: &Config, slots: &[SlotSpec], ratio: Option<f32>) -> io::Result<()> {
+/// One frame's timings for [`PerfLog`].
+struct PerfSample {
+    /// Render + ASCII compose, seconds.
+    render: f32,
+    /// Write + flush to the terminal, seconds.
+    write: f32,
+    bytes: usize,
+    /// Time spent waiting for the frame deadline (sleep + spin + input), seconds.
+    wait: f32,
+    /// How far past the deadline the wait actually ended, seconds.
+    late: f32,
+    achieved: f32,
+    target: f32,
+    quality: u8,
+}
+
+/// Once-per-second CSV of what the frame loop is doing.
+struct PerfLog {
+    out: io::BufWriter<std::fs::File>,
+    start: Instant,
+    window: Instant,
+    frames: u32,
+    render_sum: f32,
+    render_max: f32,
+    write_sum: f32,
+    bytes_sum: usize,
+    wait_sum: f32,
+    late_sum: f32,
+    late_max: f32,
+}
+
+impl PerfLog {
+    fn create(path: &std::path::Path) -> io::Result<Self> {
+        let mut out = io::BufWriter::new(std::fs::File::create(path)?);
+        writeln!(
+            out,
+            "t_s,frames,achieved_fps,target_fps,quality,render_ms_avg,render_ms_max,write_ms_avg,wait_ms_avg,late_ms_avg,late_ms_max,kb_per_frame,cols,rows,solids"
+        )?;
+        out.flush()?;
+        let now = Instant::now();
+        Ok(Self {
+            out,
+            start: now,
+            window: now,
+            frames: 0,
+            render_sum: 0.0,
+            render_max: 0.0,
+            write_sum: 0.0,
+            bytes_sum: 0,
+            wait_sum: 0.0,
+            late_sum: 0.0,
+            late_max: 0.0,
+        })
+    }
+
+    fn frame(&mut self, s: &PerfSample, cols: u16, rows: u16, solids: usize) {
+        self.frames += 1;
+        self.render_sum += s.render;
+        self.render_max = self.render_max.max(s.render);
+        self.write_sum += s.write;
+        self.bytes_sum += s.bytes;
+        self.wait_sum += s.wait;
+        self.late_sum += s.late;
+        self.late_max = self.late_max.max(s.late);
+        if self.window.elapsed() >= Duration::from_secs(1) {
+            let n = self.frames as f32;
+            let _ = writeln!(
+                self.out,
+                "{:.1},{},{:.1},{:.1},{},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.1},{},{},{}",
+                self.start.elapsed().as_secs_f32(),
+                self.frames,
+                s.achieved,
+                s.target,
+                s.quality,
+                1000.0 * self.render_sum / n,
+                1000.0 * self.render_max,
+                1000.0 * self.write_sum / n,
+                1000.0 * self.wait_sum / n,
+                1000.0 * self.late_sum / n,
+                1000.0 * self.late_max,
+                self.bytes_sum as f32 / n / 1024.0,
+                cols,
+                rows,
+                solids
+            );
+            let _ = self.out.flush();
+            self.window = Instant::now();
+            self.frames = 0;
+            self.render_sum = 0.0;
+            self.render_max = 0.0;
+            self.write_sum = 0.0;
+            self.bytes_sum = 0;
+            self.wait_sum = 0.0;
+            self.late_sum = 0.0;
+            self.late_max = 0.0;
+        }
+    }
+}
+
+fn run(cfg: &Config, slots: &[SlotSpec], ratio: Option<f32>, mut perf: Option<PerfLog>) -> io::Result<()> {
     install_panic_hook();
     let collector = Collector::spawn(cfg.poll_hz);
     let _guard = TerminalGuard::enter()?;
@@ -418,6 +570,11 @@ fn run(cfg: &Config, slots: &[SlotSpec], ratio: Option<f32>) -> io::Result<()> {
     let mut renderer = Renderer::new();
     let mut governor = QualityGovernor::default();
     let mut frame = String::with_capacity(cols as usize * rows as usize * 2 + 1024);
+    let mut overlays = Overlays::new(&scene);
+    let legend = cfg.legend_params();
+    let mut show_legend = cfg.legend;
+    let mut wireframe = cfg.wireframe;
+    let mut labels: Vec<String> = Vec::new();
 
     loop {
         // Wait for the frame deadline, staying responsive to input. Input is
@@ -425,6 +582,7 @@ fn run(cfg: &Config, slots: &[SlotSpec], ratio: Option<f32>) -> io::Result<()> {
         // to the OS timer tick (15.6 ms on Windows), capping fps at ~64, while
         // `thread::sleep` uses a high-resolution timer.
         let deadline = fps.next_deadline();
+        let wait_start = Instant::now();
         loop {
             while event::poll(Duration::ZERO)? {
                 match ui::map_event(&event::read()?) {
@@ -433,6 +591,8 @@ fn run(cfg: &Config, slots: &[SlotSpec], ratio: Option<f32>) -> io::Result<()> {
                         show_stats = !show_stats;
                         need_clear = true;
                     }
+                    Action::ToggleLegend => show_legend = !show_legend,
+                    Action::ToggleWireframe => wireframe = !wireframe,
                     Action::Resize(w, h) => {
                         (cols, rows) = (w, h);
                         need_clear = true;
@@ -447,6 +607,9 @@ fn run(cfg: &Config, slots: &[SlotSpec], ratio: Option<f32>) -> io::Result<()> {
             std::thread::sleep((deadline - SPIN_MARGIN - now).min(INPUT_SLICE));
         }
         clock::spin_until(deadline);
+        let woke = Instant::now();
+        let wait_secs = woke.duration_since(wait_start).as_secs_f32();
+        let late_secs = woke.saturating_duration_since(deadline).as_secs_f32();
 
         // Resize events are not delivered by every terminal (e.g. some ConPTY
         // hosts), so also poll the size; a change triggers a full clear.
@@ -471,13 +634,28 @@ fn run(cfg: &Config, slots: &[SlotSpec], ratio: Option<f32>) -> io::Result<()> {
         let settings = if cfg.adaptive_quality { governor.apply(base) } else { base };
 
         let t0 = Instant::now();
-        let buf = renderer.render(&scene, vp.w, vp.h, &settings);
+        renderer.render(&scene, vp.w, vp.h, &settings);
+        let readings = metrics.readings();
         let stats_text = show_stats.then(|| {
             let extra = if governor.level() > 0 { format!(" | q-{}", governor.level()) } else { String::new() };
-            ui::stats_line_fit(&metrics.readings(), fps.achieved_fps(), fps.target_fps(), &extra, cols as usize)
+            ui::stats_line_fit(&readings, fps.achieved_fps(), fps.target_fps(), &extra, cols as usize)
         });
         let stats = stats_text.as_deref().map(|text| StatsLine { text, row: area_h, width: cols as usize });
-        ascii::compose_terminal(buf, &vp, (cols as usize, area_h), &ramp, cfg.exposure, stats, &mut frame);
+        if show_legend {
+            legend_labels(&readings, legend.size, &mut labels);
+        }
+        let opt = OverlayOptions {
+            wireframe,
+            legend: show_legend.then_some(&legend),
+            labels: &labels,
+            char_aspect: cfg.char_aspect,
+            ramp: &ramp,
+            exposure: cfg.exposure,
+        };
+        if let Some(view) = renderer.view() {
+            let cells = overlays.compose(&view, vp.w, vp.h, &scene, &opt);
+            ascii::compose_terminal(cells, &vp, (cols as usize, area_h), stats, &mut frame);
+        }
         let render_secs = t0.elapsed().as_secs_f32();
 
         if need_clear {
@@ -485,9 +663,24 @@ fn run(cfg: &Config, slots: &[SlotSpec], ratio: Option<f32>) -> io::Result<()> {
             frame.insert_str(0, "\x1b[2J");
             need_clear = false;
         }
+        let tw = Instant::now();
         out.write_all(frame.as_bytes())?;
         out.flush()?;
+        let write_secs = tw.elapsed().as_secs_f32();
 
         governor.update(render_secs, fps.target_fps(), dt);
+        if let Some(p) = perf.as_mut() {
+            let s = PerfSample {
+                render: render_secs,
+                write: write_secs,
+                bytes: frame.len(),
+                wait: wait_secs,
+                late: late_secs,
+                achieved: fps.achieved_fps(),
+                target: fps.target_fps(),
+                quality: governor.level(),
+            };
+            p.frame(&s, cols, rows, slots.len());
+        }
     }
 }

@@ -4,7 +4,7 @@
 use glam::Vec3A;
 use std::f32::consts::TAU;
 
-use super::march::{GROUND, march, march_solids, normal};
+use super::march::{GROUND, Hit, march, march_solids, normal};
 use crate::scene::Scene;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -93,18 +93,33 @@ fn direct_light(scene: &Scene, p: Vec3A, n: Vec3A, rng: &mut fastrand::Rng, s: &
 }
 
 /// Radiance along one camera ray.
-pub fn radiance(scene: &Scene, mut ro: Vec3A, mut rd: Vec3A, rng: &mut fastrand::Rng, s: &TraceSettings) -> f32 {
+pub fn radiance(scene: &Scene, ro: Vec3A, rd: Vec3A, rng: &mut fastrand::Rng, s: &TraceSettings) -> f32 {
+    radiance_primary(scene, ro, rd, rng, s).0
+}
+
+/// Radiance along one camera ray, plus the primary hit (`None` when the ray
+/// escapes or sees the light first).
+pub fn radiance_primary(
+    scene: &Scene,
+    mut ro: Vec3A,
+    mut rd: Vec3A,
+    rng: &mut fastrand::Rng,
+    s: &TraceSettings,
+) -> (f32, Option<Hit>) {
     let mut acc = 0.0f32;
     let mut throughput = 1.0f32;
+    let mut primary = None;
 
     for depth in 0..=s.bounces {
         let hit = march(scene, ro, rd, s.max_dist, s.max_steps);
 
-        if depth == 0
-            && let Some(tl) = light_hit(scene, ro, rd)
-            && hit.is_none_or(|h| tl < h.t)
-        {
-            return scene.light.emission;
+        if depth == 0 {
+            if let Some(tl) = light_hit(scene, ro, rd)
+                && hit.is_none_or(|h| tl < h.t)
+            {
+                return (scene.light.emission, None);
+            }
+            primary = hit;
         }
 
         let Some(h) = hit else {
@@ -128,7 +143,7 @@ pub fn radiance(scene: &Scene, mut ro: Vec3A, mut rd: Vec3A, rng: &mut fastrand:
         ro = origin;
         rd = cosine_hemisphere(n, rng);
     }
-    acc
+    (acc, primary)
 }
 
 #[cfg(test)]

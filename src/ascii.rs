@@ -57,15 +57,32 @@ pub fn tone_map(radiance: f32, exposure: f32) -> f32 {
     (x / (1.0 + x)).powf(INV_GAMMA)
 }
 
-/// Rows joined by `'\n'` (no trailing newline): `w*h` glyphs + `h-1` newlines.
-pub fn compose_plain(buf: &[f32], w: usize, h: usize, ramp: &Ramp, exposure: f32, out: &mut String) {
+/// Radiance buffer → display luminance 0..=1.
+pub fn tone_buffer(buf: &[f32], exposure: f32, out: &mut Vec<f32>) {
+    out.clear();
+    out.extend(buf.iter().map(|&v| tone_map(v, exposure)));
+}
+
+/// Display luminance → glyphs.
+pub fn shade(lum: &[f32], ramp: &Ramp, out: &mut Vec<char>) {
+    out.clear();
+    out.extend(lum.iter().map(|&l| ramp.glyph(l)));
+}
+
+/// Radiance buffer straight to glyphs.
+pub fn glyphs(buf: &[f32], ramp: &Ramp, exposure: f32) -> Vec<char> {
+    buf.iter().map(|&v| ramp.glyph(tone_map(v, exposure))).collect()
+}
+
+/// Rows of the `w × h` glyph grid joined by `'\n'` (no trailing newline).
+pub fn compose_plain(cells: &[char], w: usize, h: usize, out: &mut String) {
     out.clear();
     for y in 0..h {
         if y > 0 {
             out.push('\n');
         }
         for x in 0..w {
-            out.push(ramp.glyph(tone_map(buf.get(y * w + x).copied().unwrap_or(0.0), exposure)));
+            out.push(cells.get(y * w + x).copied().unwrap_or(' '));
         }
     }
 }
@@ -77,17 +94,16 @@ pub struct StatsLine<'a> {
     pub width: usize,
 }
 
-/// Terminal frame: each row is prefixed with an absolute cursor move, so no
-/// line wrapping or scrolling can occur. Every cell of the `cols × rows` area
-/// is written each frame — the picture (`vp.w × vp.h` at `vp.x, vp.y`) plus
-/// blank margins — so the screen never depends on a terminal honouring
-/// clear-screen codes. Everything ends up in one string for a single `write_all`.
+/// Terminal frame from the picture's glyph grid (`vp.w × vp.h`): each row is
+/// prefixed with an absolute cursor move, so no line wrapping or scrolling
+/// can occur. Every cell of the `cols × rows` area is written each frame — the
+/// picture at `vp.x, vp.y` plus blank margins — so the screen never depends on
+/// a terminal honouring clear-screen codes. Everything ends up in one string
+/// for a single `write_all`.
 pub fn compose_terminal(
-    buf: &[f32],
+    cells: &[char],
     vp: &Viewport,
     (cols, rows): (usize, usize),
-    ramp: &Ramp,
-    exposure: f32,
     stats: Option<StatsLine<'_>>,
     out: &mut String,
 ) {
@@ -99,9 +115,7 @@ pub fn compose_terminal(
         if ty >= vp.y && ty < vp.y + vp.h && w > 0 {
             let y = ty - vp.y;
             out.extend(std::iter::repeat_n(' ', vp.x));
-            for &v in &buf[y * w..(y + 1) * w] {
-                out.push(ramp.glyph(tone_map(v, exposure)));
-            }
+            out.extend(&cells[y * w..(y + 1) * w]);
             out.extend(std::iter::repeat_n(' ', right));
         } else {
             out.extend(std::iter::repeat_n(' ', cols));
@@ -180,7 +194,7 @@ mod tests {
         let (w, h) = (17, 5);
         let buf = vec![0.5; w * h];
         let mut s = String::new();
-        compose_plain(&buf, w, h, &Ramp::default(), 1.0, &mut s);
+        compose_plain(&glyphs(&buf, &Ramp::default(), 1.0), w, h, &mut s);
         assert_eq!(s.chars().count(), w * h + (h - 1));
         assert_eq!(s.lines().count(), h);
         assert!(s.lines().all(|l| l.chars().count() == w));
@@ -194,16 +208,16 @@ mod tests {
     fn terminal_frame_contents() {
         let (w, h) = (8, 3);
         let vp = Viewport { x: 0, y: 0, w, h, fit: None };
-        let buf = vec![0.0; w * h];
+        let buf = vec![' '; w * h];
         let mut s = String::new();
-        compose_terminal(&buf, &vp, (w, h), &Ramp::default(), 1.0, stats("CPU 1% | a very long stats line", 3, 8), &mut s);
+        compose_terminal(&buf, &vp, (w, h), stats("CPU 1% | a very long stats line", 3, 8), &mut s);
         assert!(s.starts_with("\x1b[1;1H"));
         assert!(s.ends_with("\x1b[4;1HCPU 1% |"), "stats truncated to width: {s:?}");
         let glyphs: usize =
             s.split("\x1b[").skip(1).take(h).map(|seg| seg.split_once('H').unwrap().1.chars().count()).sum();
         assert_eq!(glyphs, w * h);
 
-        compose_terminal(&buf, &vp, (w, h), &Ramp::default(), 1.0, stats("ab", 3, 8), &mut s);
+        compose_terminal(&buf, &vp, (w, h), stats("ab", 3, 8), &mut s);
         assert!(s.ends_with("\x1b[4;1Hab      "), "stats padded to width");
     }
 
@@ -212,7 +226,7 @@ mod tests {
         // 7×4 area, 3×2 picture at (2,1)
         let vp = Viewport { x: 2, y: 1, w: 3, h: 2, fit: Some(1.0) };
         let mut s = String::new();
-        compose_terminal(&[1e9; 6], &vp, (7, 4), &Ramp::default(), 1.0, None, &mut s);
+        compose_terminal(&glyphs(&[1e9; 6], &Ramp::default(), 1.0), &vp, (7, 4), None, &mut s);
         assert_eq!(s, "\x1b[1;1H       \x1b[2;1H  @@@  \x1b[3;1H  @@@  \x1b[4;1H       ");
     }
 }

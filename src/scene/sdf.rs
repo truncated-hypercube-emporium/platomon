@@ -334,6 +334,28 @@ impl Polyhedron {
         enumerate_vertices(&self.face_planes())
     }
 
+    /// Edges as `(vertex a, vertex b, face 1, face 2)`, indexing
+    /// [`vertices`](Self::vertices) and [`face_planes`](Self::face_planes):
+    /// two vertices form an edge exactly when they share two faces.
+    pub fn edges(&self) -> Vec<(usize, usize, usize, usize)> {
+        let planes = self.face_planes();
+        let verts = self.vertices();
+        let on: Vec<Vec<usize>> = verts
+            .iter()
+            .map(|v| (0..planes.len()).filter(|&f| (v.dot(planes[f].0) - planes[f].1).abs() < 1e-3).collect())
+            .collect();
+        let mut out = Vec::new();
+        for a in 0..verts.len() {
+            for b in a + 1..verts.len() {
+                let shared: Vec<usize> = on[a].iter().copied().filter(|f| on[b].contains(f)).collect();
+                if shared.len() >= 2 {
+                    out.push((a, b, shared[0], shared[1]));
+                }
+            }
+        }
+        out
+    }
+
     /// Signed distance (a bound outside near edges/vertices) for circumradius 1.
     #[inline(always)]
     pub fn eval(&self, p: Vec3A) -> f32 {
@@ -415,6 +437,25 @@ mod tests {
                 .collect();
             let (lo, hi) = nn.iter().fold((f32::MAX, 0.0f32), |(l, h), &x| (l.min(x), h.max(x)));
             assert!(hi - lo < 2e-3, "{k:?} edges {lo}..{hi}");
+        }
+    }
+
+    #[test]
+    fn edges_satisfy_euler() {
+        for k in SolidKind::ALL {
+            let p = Polyhedron::new(k);
+            let (f, v) = k.counts();
+            let e = p.edges();
+            assert_eq!(e.len(), v + f - 2, "{k:?}: V - E + F = 2");
+            let vs = p.vertices();
+            let fs = p.face_planes();
+            for &(a, b, f1, f2) in &e {
+                assert!(a != b && f1 != f2);
+                // the edge midpoint lies on the surface
+                let m = (vs[a] + vs[b]) * 0.5;
+                assert!(p.eval(m).abs() < EPS, "{k:?}");
+                assert!((m.dot(fs[f1].0) - fs[f1].1).abs() < 1e-3);
+            }
         }
     }
 

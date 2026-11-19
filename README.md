@@ -1,10 +1,10 @@
-# platomon 1.2
+# platomon 1.2.1
 
 A terminal system monitor: one path-traced polyhedron per metric, rendered in monochrome ASCII on
 concentric rings. Each solid's scale and spin follow its metric; the frame rate (5–150 fps) follows
 total activity.
 
-Keys: `s` toggles the stats bar, `q` / `Esc` / `Ctrl-C` quit.
+Keys: `s` toggles the stats bar, `l` the legend, `w` the wireframe overlay; `q` / `Esc` / `Ctrl-C` quit.
 
 ## Launch parameters
 
@@ -20,6 +20,7 @@ platomon [OPTIONS]
 | `--print-config` | flag | print effective config as TOML |
 | `--snapshot` | `COLSxROWS` | render one frame to stdout, no terminal needed |
 | `--snapshot-time` | seconds of animation to simulate first | 0.3 |
+| `--perf-log` | `PATH`: one CSV line per second (fps, quality, render/write/wait ms, KB per frame, grid) | off |
 | `--stats` | flag | stats bar visible at start |
 | **Metrics & solids** | | |
 | `--show` | `METRIC[,METRIC…]`, max 16 | `cpu,ram,disk,net,gpu` |
@@ -52,6 +53,14 @@ platomon [OPTIONS]
 | `--bg-sway-period` | seconds per sway cycle | 10 |
 | `--bg-rotate` | `off\|cw\|ccw`, about the camera's focal point (seen from above) | `off` |
 | `--bg-rotate-period` | seconds per revolution | 60 |
+| **Overlays** | | |
+| `--legend` | flag: corner panel with a wireframe of each solid and its metric | off |
+| `--legend-size` | `1..5` font size: 1–2 terminal text, 3–5 block letters (1–3 cells per font pixel); icons grow with it | 2 |
+| `--legend-opacity` | `0..1` panel background: 0 = see-through, 1 = solid | 0.85 |
+| `--legend-pos` | `tl\|tr\|bl\|br` (or `top-left`, …) | `tl` |
+| `--wireframe` | flag: each solid's visible edges drawn in inverted luminosity | off |
+
+Any `--legend-*` option turns the legend on.
 
 The orbit circles the centroid of all solids and advances with wall-clock time, so its speed doesn't
 depend on fps.
@@ -98,6 +107,20 @@ each other. With `--bg-pattern solid` (the default) motion has nothing visible t
 | `triangles` | squares split on the diagonal, alternating |
 | `hex` | hexagonal tiles, three tones |
 | `radial` | rings × 12 sectors around the focal point |
+
+### Legend and wireframe
+
+The legend lists every slot in `--show` order: a small wireframe of its solid, turning with the
+solid and seen from the camera's direction (visible edges as `- | / \`, hidden edges dotted),
+next to the live reading (`CPU 37%`, `NIC Wi-Fi ↓1.0 ↑0.5 MB/s`). Sizes 3–5 draw the label in
+3×5 block letters with a compact reading (`NIC WI-FI 1.5M`, read + write MB/s). A terminal can't
+change its font for part of the screen, so the size is measured in cells. When the entries don't
+fit in one column they wrap into more columns, and entries that still don't fit are left out.
+
+`--wireframe` traces each solid's edges into the picture and inverts the luminosity under them:
+dark on bright faces, bright on shadow or a black background. Mid-grey cells are pushed at least
+6 glyph levels away, so edges stay visible everywhere. Edges on the far side of a solid, or behind
+another solid, are hidden.
 
 ### Metrics
 
@@ -200,6 +223,16 @@ platomon --bg-pattern brick --bg-sway 0.6 --bg-sway-period 6           # floor s
 platomon --bg-pattern triangles --bg-scale 0.6 --bg-contrast 1 --bg-scroll -0.5:0
 platomon --bg-pattern radial --bg-rotate ccw --bg-rotate-period 20 --camera orbit --orbit-dir cw   # floor and camera turn against each other
 platomon --bg-pattern diamond --bg-rotate cw --bg-rotate-period 30 --bg-scroll 0.4:0 --bg-sway 0.5 # rotate, scroll and sway at once
+```
+
+**Legend and wireframe**
+
+```
+platomon --legend --wireframe                                          # both overlays, default size/corner
+platomon --legend-pos br --legend-size 1 --legend-opacity 0.5          # compact, half see-through, bottom right
+platomon --legend-pos tr --legend-size 4 --legend-opacity 1            # block-letter labels on a solid panel
+platomon --wireframe --bg-lum 0 --camera orbit                         # bright edges on solids floating in a void
+platomon --show "cpu,ram,disk,net,gpu,nic,disk-dev" --legend-size 3 --legend-pos bl --wireframe --stats
 ```
 
 **Shading and performance**

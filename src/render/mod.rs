@@ -6,7 +6,7 @@ pub mod trace;
 use glam::Vec3A;
 use rayon::prelude::*;
 
-use crate::scene::Scene;
+use crate::scene::{Camera, Scene};
 pub use trace::TraceSettings;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -27,10 +27,75 @@ impl Default for RenderSettings {
     }
 }
 
+/// Pixel ↔ ray mapping for one frame (pixel coordinates are continuous:
+/// pixel `(x, y)` covers `x..x+1`, `y..y+1`).
+#[derive(Debug, Clone, Copy)]
+pub struct Projection {
+    pub cam: Camera,
+    k: f32,
+    half_w: f32,
+    half_h: f32,
+    aspect: f32,
+}
+
+impl Projection {
+    pub fn new(cam: Camera, w: usize, h: usize, rs: &RenderSettings) -> Self {
+        let aspect = rs.char_aspect.max(0.05);
+        let mut img_w = w.max(1) as f32;
+        let mut img_h = h.max(1) as f32 / aspect;
+        if let Some(r) = rs.fit_aspect.filter(|r| r.is_finite() && *r > 0.0) {
+            if img_w / img_h > r {
+                img_h = img_w / r;
+            } else {
+                img_w = img_h * r;
+            }
+        }
+        // Fit both minimum FOVs: whichever needs the wider view wins.
+        let k = (2.0 * (cam.hfov * 0.5).tan() / img_w).max(2.0 * (cam.vfov * 0.5).tan() / img_h);
+        Self { cam, k, half_w: w as f32 * 0.5, half_h: h as f32 * 0.5, aspect }
+    }
+
+    /// Unit ray direction through continuous pixel position `(x, y)`.
+    #[inline(always)]
+    pub fn ray(&self, x: f32, y: f32) -> Vec3A {
+        let u = (x - self.half_w) * self.k;
+        let v = (self.half_h - y) / self.aspect * self.k;
+        (self.cam.forward + self.cam.right * u + self.cam.up * v).normalize()
+    }
+
+    /// Continuous pixel position of world point `p`; `None` behind the camera.
+    #[inline]
+    pub fn project(&self, p: Vec3A) -> Option<(f32, f32)> {
+        let d = p - self.cam.pos;
+        let z = d.dot(self.cam.forward);
+        if z < 1e-3 {
+            return None;
+        }
+        let u = d.dot(self.cam.right) / z;
+        let v = d.dot(self.cam.up) / z;
+        Some((u / self.k + self.half_w, self.half_h - v * self.aspect / self.k))
+    }
+}
+
+/// No primary hit (escaped or saw the light).
+pub const NO_HIT: u8 = u8::MAX - 1;
+
+/// What the last frame produced: radiance plus, per pixel, the distance to and
+/// id of the first surface the centre ray hit (`INFINITY` / [`NO_HIT`] if none).
+pub struct FrameView<'a> {
+    pub radiance: &'a [f32],
+    pub depth: &'a [f32],
+    pub ids: &'a [u8],
+    pub proj: Projection,
+}
+
 /// Renders radiance into a reused buffer of `w * h` floats.
 #[derive(Default)]
 pub struct Renderer {
     buf: Vec<f32>,
+    depth: Vec<f32>,
+    ids: Vec<u8>,
+    proj: Option<Projection>,
     frame: u64,
 }
 
@@ -48,43 +113,47 @@ impl Renderer {
     pub fn render(&mut self, scene: &Scene, w: usize, h: usize, rs: &RenderSettings) -> &[f32] {
         self.frame = self.frame.wrapping_add(1);
         self.buf.resize(w * h, 0.0);
+        self.depth.resize(w * h, f32::INFINITY);
+        self.ids.resize(w * h, NO_HIT);
+        let proj = Projection::new(scene.camera, w, h, rs);
+        self.proj = Some(proj);
         if w == 0 || h == 0 {
             return &self.buf;
         }
-        let cam = scene.camera;
-        let aspect = rs.char_aspect.max(0.05);
-        let mut img_w = w as f32;
-        let mut img_h = h as f32 / aspect;
-        if let Some(r) = rs.fit_aspect.filter(|r| r.is_finite() && *r > 0.0) {
-            if img_w / img_h > r {
-                img_h = img_w / r;
-            } else {
-                img_w = img_h * r;
-            }
-        }
-        // Fit both minimum FOVs: whichever needs the wider view wins.
-        let k = (2.0 * (cam.hfov * 0.5).tan() / img_w).max(2.0 * (cam.vfov * 0.5).tan() / img_h);
-        let (half_w, half_h) = (w as f32 * 0.5, h as f32 * 0.5);
+        let origin = scene.camera.pos;
         let spp = rs.spp.max(1);
         let inv_spp = 1.0 / spp as f32;
         let frame = self.frame;
         let ts = rs.trace;
 
-        self.buf.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
-            let mut rng = fastrand::Rng::with_seed(seed(frame, y));
-            for (x, out) in row.iter_mut().enumerate() {
-                let mut sum = 0.0;
-                for _ in 0..spp {
-                    let (jx, jy) = if spp == 1 { (0.5, 0.5) } else { (rng.f32(), rng.f32()) };
-                    let u = (x as f32 + jx - half_w) * k;
-                    let v = (half_h - y as f32 - jy) / aspect * k;
-                    let rd: Vec3A = (cam.forward + cam.right * u + cam.up * v).normalize();
-                    sum += trace::radiance(scene, cam.pos, rd, &mut rng, &ts);
+        self.buf
+            .par_chunks_mut(w)
+            .zip(self.depth.par_chunks_mut(w))
+            .zip(self.ids.par_chunks_mut(w))
+            .enumerate()
+            .for_each(|(y, ((row, drow), irow))| {
+                let mut rng = fastrand::Rng::with_seed(seed(frame, y));
+                for (x, out) in row.iter_mut().enumerate() {
+                    let mut sum = 0.0;
+                    for s in 0..spp {
+                        // First sample through the pixel centre, which also fills the G-buffer.
+                        let (jx, jy) = if s == 0 { (0.5, 0.5) } else { (rng.f32(), rng.f32()) };
+                        let rd = proj.ray(x as f32 + jx, y as f32 + jy);
+                        let (l, hit) = trace::radiance_primary(scene, origin, rd, &mut rng, &ts);
+                        if s == 0 {
+                            (drow[x], irow[x]) = hit.map_or((f32::INFINITY, NO_HIT), |h| (h.t, h.id));
+                        }
+                        sum += l;
+                    }
+                    *out = sum * inv_spp;
                 }
-                *out = sum * inv_spp;
-            }
-        });
+            });
         &self.buf
+    }
+
+    /// The last rendered frame with its G-buffer.
+    pub fn view(&self) -> Option<FrameView<'_>> {
+        Some(FrameView { radiance: &self.buf, depth: &self.depth, ids: &self.ids, proj: self.proj? })
     }
 }
 
@@ -109,6 +178,11 @@ impl QualityGovernor {
 
     pub fn level(&self) -> u8 {
         self.level
+    }
+
+    /// Pin a quality level (clamped), e.g. for benchmarks.
+    pub fn force_level(&mut self, level: u8) {
+        self.level = level.min(Self::MAX_LEVEL);
     }
 
     /// `render_secs`: time spent rendering this frame; `dt`: frame wall time.
@@ -161,6 +235,26 @@ mod tests {
         assert!(buf.iter().all(|v| v.is_finite() && *v >= 0.0));
         assert!(buf.iter().any(|v| *v > 0.05), "something is lit");
         assert_eq!(r.render(&scene, 0, 0, &RenderSettings::default()).len(), 0);
+    }
+
+    #[test]
+    fn projection_inverts_rays_and_gbuffer_matches() {
+        let scene = Scene::demo(&AnimParams::default());
+        let rs = RenderSettings { fit_aspect: Some(16.0 / 9.0), ..RenderSettings::default() };
+        let p = Projection::new(scene.camera, 80, 30, &rs);
+        for (x, y) in [(0.5, 0.5), (40.0, 15.0), (79.5, 29.5), (12.3, 7.7)] {
+            let q = scene.camera.pos + p.ray(x, y) * 7.0;
+            let (px, py) = p.project(q).unwrap();
+            assert!((px - x).abs() < 1e-3 && (py - y).abs() < 1e-3, "({x},{y}) -> ({px},{py})");
+        }
+        assert!(p.project(scene.camera.pos - scene.camera.forward).is_none(), "behind the camera");
+
+        let mut r = Renderer::new();
+        r.render(&scene, 40, 12, &RenderSettings::default());
+        let v = r.view().unwrap();
+        assert_eq!((v.depth.len(), v.ids.len()), (480, 480));
+        assert!(v.ids.iter().any(|&i| (i as usize) < scene.solids.len()), "solids in the G-buffer");
+        assert!(v.ids.iter().zip(v.depth).all(|(&i, d)| (i == NO_HIT) == d.is_infinite()));
     }
 
     #[test]

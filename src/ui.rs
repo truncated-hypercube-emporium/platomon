@@ -9,6 +9,8 @@ pub enum Action {
     None,
     Quit,
     ToggleStats,
+    ToggleLegend,
+    ToggleWireframe,
     Resize(u16, u16),
 }
 
@@ -23,6 +25,8 @@ pub fn map_event(ev: &Event) -> Action {
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => Action::Quit,
                 KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => Action::Quit,
                 KeyCode::Char('s') | KeyCode::Char('S') if *kind == KeyEventKind::Press => Action::ToggleStats,
+                KeyCode::Char('l') | KeyCode::Char('L') if *kind == KeyEventKind::Press => Action::ToggleLegend,
+                KeyCode::Char('w') | KeyCode::Char('W') if *kind == KeyEventKind::Press => Action::ToggleWireframe,
                 _ => Action::None,
             }
         }
@@ -54,6 +58,25 @@ pub fn segment(r: &Reading) -> String {
         MetricKind::Net => pair("NET".into(), "↓", "↑"),
         MetricKind::Nic => pair(format!("NIC {}", name()), "↓", "↑"),
         MetricKind::DiskDev => pair(format!("DEV {}", name()), "r", "w"),
+    }
+}
+
+/// Compact legend label for block letters: `CPU 37%`, `NET 1.5M`,
+/// `NIC ETHERNET 0.2M` (rates are read + write, MB/s).
+pub fn short_label(r: &Reading) -> String {
+    let total = || match (r.a, r.b) {
+        (Some(a), Some(b)) => format!("{:.1}M", a + b),
+        _ => "n/a".to_string(),
+    };
+    let name = || r.name.as_deref().unwrap_or("auto").chars().take(10).collect::<String>();
+    match r.kind {
+        MetricKind::Cpu => format!("CPU {}", pct(r.pct)),
+        MetricKind::Ram => format!("RAM {}", pct(r.pct)),
+        MetricKind::Gpu => format!("GPU {}", pct(r.pct)),
+        MetricKind::Disk => format!("DSK {}", total()),
+        MetricKind::Net => format!("NET {}", total()),
+        MetricKind::Nic => format!("NIC {} {}", name(), total()),
+        MetricKind::DiskDev => format!("DEV {} {}", name(), total()),
     }
 }
 
@@ -107,6 +130,16 @@ mod tests {
             Action::None
         );
         assert_eq!(map_event(&Event::Resize(80, 24)), Action::Resize(80, 24));
+        assert_eq!(map_event(&key(KeyCode::Char('l'), KeyModifiers::NONE, p)), Action::ToggleLegend);
+        assert_eq!(map_event(&key(KeyCode::Char('W'), KeyModifiers::SHIFT, p)), Action::ToggleWireframe);
+    }
+
+    #[test]
+    fn short_labels() {
+        use MetricKind::*;
+        assert_eq!(short_label(&rd(Cpu, Some(37.4), None, None, None)), "CPU 37%");
+        assert_eq!(short_label(&rd(Net, None, Some(1.0), Some(0.5), None)), "NET 1.5M");
+        assert_eq!(short_label(&rd(Nic, None, None, None, Some("Ethernet 2 long"))), "NIC Ethernet 2 n/a");
     }
 
     fn rd(kind: MetricKind, pct: Option<f32>, a: Option<f64>, b: Option<f64>, name: Option<&str>) -> Reading {
