@@ -2,13 +2,15 @@
 //! y = 0, one spherical area light and a dim uniform sky.
 
 pub mod camera;
+pub mod ground;
 pub mod sdf;
 
-use glam::{Mat3A, Vec3A};
+use glam::{Mat3A, Vec2, Vec3A};
 use std::f32::consts::{PI, TAU};
 
 use crate::metrics::Channel;
 pub use camera::{Camera, CameraParams, CameraRig};
+pub use ground::{Ground, GroundParams};
 use sdf::{Polyhedron, SolidKind, inverse_rotation};
 
 /// Circumradius of every solid at scale 1.
@@ -162,7 +164,8 @@ pub struct Scene {
     pub sky: f32,
     /// Radiance of escaping camera rays.
     pub background: f32,
-    pub ground_albedo: f32,
+    /// Background plane at y = 0 (pattern, motion; disabled at luminosity 0).
+    pub ground: Ground,
     /// Top of the y-slab that contains every solid.
     pub slab_top: f32,
 }
@@ -208,7 +211,8 @@ impl Scene {
             },
             sky: 0.12,
             background: 0.0,
-            ground_albedo: 0.15,
+            // Rotation centre: the focal point the camera looks at, on the ground.
+            ground: Ground::new(&GroundParams::default(), Vec2::new(centroid.x, centroid.z)),
             slab_top: 2.0 * BASE_RADIUS + HOVER,
         };
         for i in 0..s.solids.len() {
@@ -216,6 +220,12 @@ impl Scene {
         }
         s.refresh_transforms();
         s
+    }
+
+    /// Replace the background settings (keeps the focal-point pivot).
+    pub fn with_ground(mut self, p: &GroundParams) -> Self {
+        self.ground = Ground::new(p, Vec2::new(self.centroid.x, self.centroid.z));
+        self
     }
 
     /// The classic five-solid scene with a static camera.
@@ -260,6 +270,7 @@ impl Scene {
         self.refresh_transforms();
         self.rig.advance(dt);
         self.camera = self.rig.camera();
+        self.ground.advance(dt);
     }
 }
 

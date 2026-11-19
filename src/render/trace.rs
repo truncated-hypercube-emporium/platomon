@@ -114,7 +114,7 @@ pub fn radiance(scene: &Scene, mut ro: Vec3A, mut rd: Vec3A, rng: &mut fastrand:
 
         let p = ro + rd * h.t;
         let n = normal(scene, h.id, p);
-        let albedo = if h.id == GROUND { scene.ground_albedo } else { scene.solids[h.id as usize].albedo };
+        let albedo = if h.id == GROUND { scene.ground.albedo(p, h.t) } else { scene.solids[h.id as usize].albedo };
         let origin = p + n * RAY_OFFSET;
 
         acc += throughput * albedo * direct_light(scene, origin, n, rng, s);

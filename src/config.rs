@@ -8,6 +8,7 @@ use crate::aspect::AspectMode;
 use crate::clock::FpsCurve;
 use crate::metrics::{MetricKind, MetricSpec};
 use crate::scene::camera::{CameraMode, OrbitDir};
+use crate::scene::ground::{self, GroundParams, Pattern, Spin};
 use crate::scene::sdf::SolidKind;
 
 /// Most solids shown at once.
@@ -95,6 +96,24 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
 
+    // --- background (ground plane) ---
+    /// 0 = no background surface, 5 = original, 10 = brightest.
+    pub bg_lum: f32,
+    pub bg_pattern: Pattern,
+    /// Tile tone spread around `bg_lum`, 0..=1.
+    pub bg_contrast: f32,
+    /// Tile size, world units.
+    pub bg_scale: f32,
+    /// Constant pattern translation [x, z], world units/s.
+    pub bg_scroll: [f32; 2],
+    /// Radius of a circular back-and-forth translation; 0 = none.
+    pub bg_sway: f32,
+    pub bg_sway_period: f32,
+    /// Rotation about the camera's focal point: off, cw, ccw.
+    pub bg_rotate: Spin,
+    /// Seconds per revolution.
+    pub bg_rotate_period: f32,
+
     // --- animation ---
     pub min_scale: f32,
     pub max_scale: f32,
@@ -146,6 +165,15 @@ impl Default for Config {
             orbit_height: None,
             orbit_bob: 0.3,
             seed: None,
+            bg_lum: ground::LUM_REF,
+            bg_pattern: Pattern::Solid,
+            bg_contrast: 0.5,
+            bg_scale: 1.0,
+            bg_scroll: [0.0, 0.0],
+            bg_sway: 0.0,
+            bg_sway_period: 10.0,
+            bg_rotate: Spin::Off,
+            bg_rotate_period: 60.0,
             min_scale: 0.45,
             max_scale: 1.0,
             max_spin: 3.0,
@@ -233,6 +261,16 @@ impl Config {
 
         self.orbit_period = finite_or(self.orbit_period, d.orbit_period).clamp(2.0, 86_400.0);
         self.orbit_bob = finite_or(self.orbit_bob, d.orbit_bob).clamp(0.0, 10.0);
+
+        self.bg_lum = finite_or(self.bg_lum, d.bg_lum).clamp(0.0, ground::LUM_MAX);
+        self.bg_contrast = finite_or(self.bg_contrast, d.bg_contrast).clamp(0.0, 1.0);
+        self.bg_scale = finite_or(self.bg_scale, d.bg_scale).clamp(0.05, 100.0);
+        for v in &mut self.bg_scroll {
+            *v = finite_or(*v, 0.0).clamp(-100.0, 100.0);
+        }
+        self.bg_sway = finite_or(self.bg_sway, d.bg_sway).clamp(0.0, 100.0);
+        self.bg_sway_period = finite_or(self.bg_sway_period, d.bg_sway_period).clamp(0.5, 86_400.0);
+        self.bg_rotate_period = finite_or(self.bg_rotate_period, d.bg_rotate_period).clamp(0.5, 86_400.0);
         for v in [&mut self.orbit_radius, &mut self.orbit_height] {
             *v = v.filter(|x| x.is_finite()).map(|x| x.clamp(0.5, 500.0));
         }
@@ -255,6 +293,20 @@ impl Config {
         let w = &mut self.weights;
         for v in [&mut w.cpu, &mut w.ram, &mut w.disk, &mut w.net, &mut w.gpu, &mut w.nic, &mut w.disk_dev] {
             *v = finite_or(*v, 1.0).max(0.0);
+        }
+    }
+
+    pub fn ground_params(&self) -> GroundParams {
+        GroundParams {
+            lum: self.bg_lum,
+            pattern: self.bg_pattern,
+            contrast: self.bg_contrast,
+            scale: self.bg_scale,
+            scroll: self.bg_scroll,
+            sway: self.bg_sway,
+            sway_period: self.bg_sway_period,
+            rotate: self.bg_rotate,
+            rotate_period: self.bg_rotate_period,
         }
     }
 
@@ -406,6 +458,21 @@ mod tests {
         assert!(bad(&|c| _ = c.solids.insert("cpu".into(), "sphere".into())).contains("unknown solid"));
         assert!(bad(&|c| _ = c.solids.insert("nic".into(), "cube".into())).contains("not in show"));
         assert!(bad(&|c| _ = c.rings.insert("gpu:0".into(), 1)).contains("takes no"));
+    }
+
+    #[test]
+    fn background_settings() {
+        let c = Config::from_toml(
+            "bg_lum = 0.0\nbg_pattern = \"hex\"\nbg_scroll = [0.5, -1.0]\nbg_rotate = \"cw\"\n",
+        )
+        .unwrap();
+        let g = c.ground_params();
+        assert_eq!((g.lum, g.pattern, g.scroll, g.rotate), (0.0, Pattern::Hex, [0.5, -1.0], Spin::Cw));
+        assert!(Config::from_toml("bg_pattern = \"plaid\"").is_err());
+        let mut c = Config { bg_lum: 50.0, bg_contrast: -1.0, bg_scroll: [f32::NAN, 3.0], ..Config::default() };
+        c.sanitize();
+        assert_eq!((c.bg_lum, c.bg_contrast, c.bg_scroll), (10.0, 0.0, [0.0, 3.0]));
+        assert_eq!(Config::default().bg_lum, 5.0, "default reproduces the original ground");
     }
 
     #[test]

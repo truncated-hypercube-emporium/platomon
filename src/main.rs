@@ -13,6 +13,7 @@ use platomon::config::{Config, SlotSpec, split_assignment};
 use platomon::metrics::{Channel, MetricKind, MetricsState, activity_score};
 use platomon::render::{QualityGovernor, RenderSettings, Renderer, TraceSettings};
 use platomon::scene::camera::{CameraMode, CameraParams, OrbitDir};
+use platomon::scene::ground::{Pattern, Spin, parse_vec2};
 use platomon::scene::sdf::{Polyhedron, SolidKind};
 use platomon::scene::{AnimParams, Scene, SlotLayout};
 use platomon::ui::{self, Action};
@@ -26,6 +27,7 @@ enum ListWhat {
     Metrics,
     Aspects,
     Sensors,
+    Patterns,
 }
 
 /// Platonic-solid ASCII system monitor.
@@ -47,6 +49,9 @@ struct Cli {
     /// Render one frame to stdout (e.g. 120x40) and exit.
     #[arg(long, value_name = "COLSxROWS")]
     snapshot: Option<String>,
+    /// Seconds of animation (camera, background motion) to simulate before the snapshot.
+    #[arg(long, value_name = "SECS", default_value_t = 0.3)]
+    snapshot_time: f32,
     /// Show the stats bar at start.
     #[arg(long)]
     stats: bool,
@@ -112,6 +117,35 @@ struct Cli {
     /// Seed for random choices (orbit direction).
     #[arg(long, value_name = "U64")]
     seed: Option<u64>,
+
+    // ---- background (ground plane)
+    /// Background luminosity 0..10: 5 = original, 0 = no background surface.
+    #[arg(long, value_name = "0..10")]
+    bg_lum: Option<f32>,
+    /// Background pattern: solid, checker, diamond, brick, triangles, hex, radial.
+    #[arg(long, value_name = "PATTERN")]
+    bg_pattern: Option<Pattern>,
+    /// Pattern tone spread around the luminosity, 0..1.
+    #[arg(long, value_name = "0..1")]
+    bg_contrast: Option<f32>,
+    /// Tile size in world units (a full-size solid is 2 across).
+    #[arg(long, value_name = "FLOAT")]
+    bg_scale: Option<f32>,
+    /// Constant pattern translation, world units/s, e.g. 0.5:0 or -0.2:0.3.
+    #[arg(long, value_name = "DX:DZ", allow_hyphen_values = true)]
+    bg_scroll: Option<String>,
+    /// Radius of a circular back-and-forth translation; 0 = off.
+    #[arg(long, value_name = "FLOAT")]
+    bg_sway: Option<f32>,
+    /// Seconds per sway cycle.
+    #[arg(long, value_name = "SECS")]
+    bg_sway_period: Option<f32>,
+    /// Rotate the background about the camera's focal point: off, cw, ccw.
+    #[arg(long, value_name = "DIR")]
+    bg_rotate: Option<Spin>,
+    /// Seconds per background revolution.
+    #[arg(long, value_name = "SECS")]
+    bg_rotate_period: Option<f32>,
 }
 
 fn fail(msg: impl std::fmt::Display) -> ! {
@@ -124,6 +158,10 @@ fn apply_cli(cfg: &mut Config, cli: &Cli) -> Result<(), String> {
         ($($f:ident),*) => { $( if let Some(v) = cli.$f.clone() { cfg.$f = v; } )* };
     }
     set!(spp, bounces, fps_min, fps_max, ramp, char_aspect, aspect, aspect_mode, camera, orbit_period, orbit_dir, orbit_bob);
+    set!(bg_lum, bg_pattern, bg_contrast, bg_scale, bg_sway, bg_sway_period, bg_rotate, bg_rotate_period);
+    if let Some(s) = &cli.bg_scroll {
+        cfg.bg_scroll = parse_vec2(s).map_err(|e| format!("--bg-scroll: {e}"))?;
+    }
     if cli.orbit_radius.is_some() {
         cfg.orbit_radius = cli.orbit_radius;
     }
@@ -176,7 +214,7 @@ fn main() {
         else {
             fail("--snapshot expects COLSxROWS, e.g. 120x40");
         };
-        println!("{}", snapshot(&cfg, &slots, ratio, w, h));
+        println!("{}", snapshot(&cfg, &slots, ratio, w, h, cli.snapshot_time));
         return;
     }
 
@@ -211,6 +249,13 @@ fn list(what: ListWhat) {
                 println!("{:<18} {:<24} {:<42} {spin}", id, k.default_solid().id(), scale);
             }
             println!("\nNAME: see --list sensors. Without NAME the busiest instance is used.");
+        }
+        ListWhat::Patterns => {
+            println!("{:<10} DESCRIPTION", "PATTERN");
+            for p in Pattern::ALL {
+                println!("{:<10} {}", p.id(), p.describe());
+            }
+            println!("\nTiles alternate around --bg-lum by --bg-contrast; --bg-scale sets tile size.");
         }
         ListWhat::Aspects => {
             println!("{:<8} {:>11}  RATIO", "PRESET", "RESOLUTION");
@@ -280,9 +325,9 @@ fn layouts(slots: &[SlotSpec]) -> Vec<SlotLayout> {
 }
 
 /// One frame with every slot at a fixed demo level.
-fn snapshot(cfg: &Config, slots: &[SlotSpec], ratio: Option<f32>, w: usize, h: usize) -> String {
+fn snapshot(cfg: &Config, slots: &[SlotSpec], ratio: Option<f32>, w: usize, h: usize, secs: f32) -> String {
     let anim = anim_params(cfg);
-    let mut scene = Scene::new(&layouts(slots), &anim, &camera_params(cfg));
+    let mut scene = Scene::new(&layouts(slots), &anim, &camera_params(cfg)).with_ground(&cfg.ground_params());
     let levels = [0.7, 0.5, 0.3, 0.9, 0.0, 0.6, 0.4, 0.8];
     let ch: Vec<Channel> = (0..slots.len())
         .map(|i| {
@@ -290,7 +335,12 @@ fn snapshot(cfg: &Config, slots: &[SlotSpec], ratio: Option<f32>, w: usize, h: u
             Channel { available: true, level: l, spin_y: l, spin_x: 0.2, activity: l }
         })
         .collect();
-    scene.update(&ch, &anim, 0.3);
+    // Step in ≤0.1 s increments, the way the live loop would.
+    let secs = if secs.is_finite() { secs.clamp(0.0, 86_400.0) } else { 0.3 };
+    let steps = (secs / 0.1).ceil().max(1.0) as usize;
+    for _ in 0..steps {
+        scene.update(&ch, &anim, secs / steps as f32);
+    }
     let vp = aspect::viewport(w, h, ratio, cfg.aspect_mode, cfg.char_aspect);
     let mut r = Renderer::new();
     let buf = r.render(&scene, vp.w, vp.h, &render_settings(cfg, ratio));
@@ -361,7 +411,7 @@ fn run(cfg: &Config, slots: &[SlotSpec], ratio: Option<f32>) -> io::Result<()> {
     let ramp = Ramp::new(&cfg.ramp);
     let specs: Vec<_> = slots.iter().map(|s| s.metric.clone()).collect();
 
-    let mut scene = Scene::new(&layouts(slots), &anim, &camera_params(cfg));
+    let mut scene = Scene::new(&layouts(slots), &anim, &camera_params(cfg)).with_ground(&cfg.ground_params());
     let mut metrics = MetricsState::new(cfg, &specs);
     let weights = metrics.weights(&cfg.weights);
     let mut fps = FrameClock::new(cfg.fps_min, cfg.fps_max, cfg.fps_curve, cfg.fps_slew);

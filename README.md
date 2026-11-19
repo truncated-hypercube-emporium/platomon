@@ -1,4 +1,4 @@
-# platomon 1.1
+# platomon 1.2
 
 A terminal system monitor: one path-traced polyhedron per metric, rendered in monochrome ASCII on
 concentric rings. Each solid's scale and spin follow its metric; the frame rate (5–150 fps) follows
@@ -16,9 +16,10 @@ platomon [OPTIONS]
 |---|---|---|
 | **General** | | |
 | `--config` | `PATH` | `<config dir>/platomon/config.toml` if present |
-| `--list` | `solids\|metrics\|aspects\|sensors` | prints IDs (sensors: this machine's disks/adapters) and exits |
+| `--list` | `solids\|metrics\|aspects\|sensors\|patterns` | prints IDs (sensors: this machine's disks/adapters) and exits |
 | `--print-config` | flag | print effective config as TOML |
 | `--snapshot` | `COLSxROWS` | render one frame to stdout, no terminal needed |
+| `--snapshot-time` | seconds of animation to simulate first | 0.3 |
 | `--stats` | flag | stats bar visible at start |
 | **Metrics & solids** | | |
 | `--show` | `METRIC[,METRIC…]`, max 16 | `cpu,ram,disk,net,gpu` |
@@ -41,9 +42,44 @@ platomon [OPTIONS]
 | `--orbit-height` | world units | fit to layout |
 | `--orbit-bob` | vertical drift amplitude, 0 = level | 0.3 |
 | `--seed` | `U64`, makes `random` repeatable | random |
+| **Background** | | |
+| `--bg-lum` | `0..10`: 5 = original, **0 = no background surface** | 5 |
+| `--bg-pattern` | `solid\|checker\|diamond\|brick\|triangles\|hex\|radial` | `solid` |
+| `--bg-contrast` | `0..1`, tile tone spread around `--bg-lum` | 0.5 |
+| `--bg-scale` | tile size, world units (a full-size solid is 2 across) | 1.0 |
+| `--bg-scroll` | `DX:DZ` world units/s, e.g. `0.5:0` or `-0.2:0.3` | `0:0` |
+| `--bg-sway` | radius of a circular back-and-forth translation; 0 = off | 0 |
+| `--bg-sway-period` | seconds per sway cycle | 10 |
+| `--bg-rotate` | `off\|cw\|ccw`, about the camera's focal point (seen from above) | `off` |
+| `--bg-rotate-period` | seconds per revolution | 60 |
 
 The orbit circles the centroid of all solids and advances with wall-clock time, so its speed doesn't
 depend on fps.
+
+### Background
+
+The ground plane's mean brightness follows `--bg-lum` linearly: 5 is the original ground and 10 is
+twice as bright. At 0 the plane is removed entirely, so the solids float in a black void with no
+ground or contact shadows. Patterns alternate their tiles above and below that mean by
+`--bg-contrast`, so changing the pattern doesn't change the overall brightness. `hex` uses three
+tones, and `radial` is a polar checkerboard centred on the focal point. Far-away tiles smaller than
+a character cell fade to the mean instead of flickering.
+
+Motion is set in the pattern's own frame and runs on wall-clock time. `--bg-scroll` translates at a
+constant velocity, `--bg-sway` adds a circular back-and-forth, and `--bg-rotate` spins the pattern
+about the camera's focal point (the layout centroid the camera looks at). Rotation and the
+`--camera orbit` direction use the same `cw`/`ccw` convention, so they can turn with or against
+each other. With `--bg-pattern solid` (the default) motion has nothing visible to move.
+
+| Pattern | Description |
+|---|---|
+| `solid` | uniform (original look) |
+| `checker` | square checkerboard |
+| `diamond` | checkerboard rotated 45° |
+| `brick` | checkerboard, alternate rows offset half a tile |
+| `triangles` | squares split on the diagonal, alternating |
+| `hex` | hexagonal tiles, three tones |
+| `radial` | rings × 12 sectors around the focal point |
 
 ### Metrics
 
@@ -94,6 +130,8 @@ picture framed for the ratio and cuts off the overflow.
 platomon --camera orbit --orbit-period 90 --aspect uwqhd
 platomon --show cpu,ram,gpu,nic:Ethernet,nic:Wi-Fi --ring nic=1 --solid nic:Wi-Fi=rhombic-triacontahedron
 platomon --show "cpu,disk-dev:C:\,disk-dev:D:\" --solid disk-dev=truncated-octahedron --stats
+platomon --bg-pattern checker --bg-contrast 0.8 --bg-scale 1.5 --bg-scroll 0.4:0 --bg-rotate cw --bg-rotate-period 30
+platomon --bg-lum 0 --camera orbit                       # solids floating in a void
 ```
 
 ## Config file

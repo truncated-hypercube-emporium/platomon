@@ -79,7 +79,8 @@ pub fn march_solids(scene: &Scene, ro: Vec3A, rd: Vec3A, tmin: f32, tmax: f32, m
 /// Nearest hit with anything (solids or ground) within `max_dist`.
 #[inline]
 pub fn march(scene: &Scene, ro: Vec3A, rd: Vec3A, max_dist: f32, max_steps: u32) -> Option<Hit> {
-    let t_plane = if rd.y < -1e-7 && ro.y > 0.0 { -ro.y / rd.y } else { f32::INFINITY };
+    let t_plane =
+        if scene.ground.enabled && rd.y < -1e-7 && ro.y > 0.0 { -ro.y / rd.y } else { f32::INFINITY };
     let limit = max_dist.min(t_plane);
     if let Some(h) = march_solids(scene, ro, rd, 0.0, limit, max_steps) {
         return Some(h);
@@ -116,6 +117,16 @@ mod tests {
         assert_eq!(h.id, GROUND);
         assert!((h.t - 5.0).abs() < 1e-4);
         assert!(march(&s, far, Vec3A::Y, 50.0, 64).is_none());
+    }
+
+    #[test]
+    fn luminosity_zero_removes_ground() {
+        use crate::scene::GroundParams;
+        let s = Scene::demo(&AnimParams::default()).with_ground(&GroundParams { lum: 0.0, ..Default::default() });
+        assert!(march(&s, Vec3A::new(20.0, 5.0, 20.0), -Vec3A::Y, 50.0, 64).is_none(), "falls through");
+        // solids are still there
+        let c = s.solids[0].center;
+        assert_eq!(march(&s, c + Vec3A::new(0.0, 6.0, 0.0), -Vec3A::Y, 50.0, 64).unwrap().id, 0);
     }
 
     #[test]
