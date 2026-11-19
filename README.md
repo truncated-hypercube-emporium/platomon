@@ -29,7 +29,7 @@ platomon [OPTIONS]
 | `--spp` | `N` (1–64) | 2 |
 | `--bounces` | `N` (0–8) | 2 |
 | `--fps-min` / `--fps-max` | `FPS` | 5 / 150 |
-| `--ramp` | `STR`, darkest first | `" .:-=+*#%@"` |
+| `--ramp` | `STR`, darkest first (any length ≥ 2) | `" .,:;-~=+*ox#%&@"` (16 levels) |
 | `--char-aspect` | cell width ÷ height | 0.5 |
 | **Display ratio** | | |
 | `--aspect` | `fill`, preset or `W:H` | `fill` |
@@ -55,6 +55,24 @@ platomon [OPTIONS]
 
 The orbit circles the centroid of all solids and advances with wall-clock time, so its speed doesn't
 depend on fps.
+
+### Luminosity levels
+
+Each pixel's radiance is tone-mapped (Reinhard, then gamma 2.2) to a luminance from 0 to 1. The
+ramp splits that range into equal buckets, one per glyph. The default ramp has 16:
+
+| # | Glyph | Luminance | # | Glyph | Luminance |
+|---:|:---:|---|---:|:---:|---|
+| 0 | ` ` | 0.0000 – 0.0625 | 8 | `+` | 0.5000 – 0.5625 |
+| 1 | `.` | 0.0625 – 0.1250 | 9 | `*` | 0.5625 – 0.6250 |
+| 2 | `,` | 0.1250 – 0.1875 | 10 | `o` | 0.6250 – 0.6875 |
+| 3 | `:` | 0.1875 – 0.2500 | 11 | `x` | 0.6875 – 0.7500 |
+| 4 | `;` | 0.2500 – 0.3125 | 12 | `#` | 0.7500 – 0.8125 |
+| 5 | `-` | 0.3125 – 0.3750 | 13 | `%` | 0.8125 – 0.8750 |
+| 6 | `~` | 0.3750 – 0.4375 | 14 | `&` | 0.8750 – 0.9375 |
+| 7 | `=` | 0.4375 – 0.5000 | 15 | `@` | 0.9375 – 1.0000 |
+
+The original 10-level ramp is `--ramp " .:-=+*#%@"`.
 
 ### Background
 
@@ -126,13 +144,92 @@ picture framed for the ratio and cuts off the overflow.
 
 ### Examples
 
+Instance names (`nic:NAME`, `disk-dev:NAME`) are machine-specific; `platomon --list sensors` prints
+yours. The examples use Windows names (`Ethernet`, `C:\`); on Linux use e.g. `nic:eth0` and
+`disk-dev:/` or `disk-dev:nvme0n1p2`. Quote any argument that contains `\` or spaces, and quote
+`--show` lists in PowerShell, which otherwise splits `cpu,ram,disk` into separate arguments.
+
+**Getting started**
+
 ```
-platomon --camera orbit --orbit-period 90 --aspect uwqhd
-platomon --show cpu,ram,gpu,nic:Ethernet,nic:Wi-Fi --ring nic=1 --solid nic:Wi-Fi=rhombic-triacontahedron
-platomon --show "cpu,disk-dev:C:\,disk-dev:D:\" --solid disk-dev=truncated-octahedron --stats
-platomon --bg-pattern checker --bg-contrast 0.8 --bg-scale 1.5 --bg-scroll 0.4:0 --bg-rotate cw --bg-rotate-period 30
-platomon --bg-lum 0 --camera orbit                       # solids floating in a void
+platomon --stats                                   # default 5 solids, stats bar on
+platomon --list sensors                            # this machine's disks and adapters
+platomon --list solids                             # all 15 solids with face/vertex counts
+platomon --print-config > my.toml                  # start a config from the current settings
 ```
+
+**Choosing metrics, solids and rings**
+
+```
+# CPU alone in the centre, everything else on a ring around it
+platomon --show "cpu,ram,disk,net,gpu" --ring cpu=0 --ring ram=1 --ring disk=1 --ring net=1 --ring gpu=1
+
+# One solid per disk on an outer ring, all truncated octahedra except C:
+platomon --show "cpu,ram,gpu,disk-dev:C:\,disk-dev:D:\,disk-dev:E:\" --ring disk-dev=1 --solid disk-dev=truncated-octahedron --solid "disk-dev:C:\=rhombicuboctahedron"
+
+# Two adapters, compared side by side
+platomon --show "cpu,nic:Ethernet,nic:Wi-Fi" --solid nic:Ethernet=rhombic-dodecahedron --solid nic:Wi-Fi=rhombic-triacontahedron --stats
+
+# Archimedean-only theme for the classic five metrics
+platomon --solid cpu=truncated-icosahedron --solid ram=cuboctahedron --solid disk=truncated-octahedron --solid net=truncated-tetrahedron --solid gpu=icosidodecahedron
+
+# All 15 solids on three rings: 1 in the centre, 6 in the middle, 8 outside.
+# Named instances that don't exist on a machine simply show n/a at minimum size.
+platomon --camera orbit --orbit-period 45 --stats --show "cpu,ram,disk,net,gpu,nic:Ethernet,disk-dev:C:\,nic,disk-dev,disk-dev:D:\,disk-dev:X:\,disk-dev:Z:\,nic:Wi-Fi,nic:vEthernet,nic:Bluetooth" --ring cpu=0 --ring ram=1 --ring disk=1 --ring net=1 --ring gpu=1 --ring nic:Ethernet=1 --ring "disk-dev:C:\=1" --ring nic=2 --ring disk-dev=2 --solid cpu=icosahedron --solid ram=cube --solid disk=octahedron --solid net=tetrahedron --solid gpu=dodecahedron --solid nic:Ethernet=rhombic-dodecahedron --solid "disk-dev:C:\=truncated-cube" --solid nic=rhombic-triacontahedron --solid disk-dev=cuboctahedron --solid "disk-dev:D:\=truncated-octahedron" --solid "disk-dev:X:\=rhombicuboctahedron" --solid "disk-dev:Z:\=icosidodecahedron" --solid nic:Wi-Fi=truncated-icosahedron --solid nic:vEthernet=truncated-dodecahedron --solid nic:Bluetooth=truncated-tetrahedron
+```
+
+**Camera and display ratio**
+
+```
+platomon --camera orbit --orbit-period 90 --aspect uwqhd               # slow orbit, ultrawide letterbox
+platomon --camera orbit --orbit-dir ccw --orbit-bob 0 --aspect fhd     # level ccw circle, 16:9
+platomon --camera orbit --seed 7                                       # random direction, same every run
+platomon --aspect 21:9 --aspect-mode crop                              # fill the terminal, framed for 21:9
+platomon --aspect vga --orbit-height 9 --orbit-radius 7                # 4:3, steep top-down static view
+platomon --camera orbit --orbit-period 20 --orbit-radius 14 --orbit-height 3 --orbit-bob 1.5   # low, wide, bobbing fly-around
+```
+
+**Background**
+
+```
+platomon --bg-lum 1                                                    # dark floor, solids pop
+platomon --bg-lum 0 --camera orbit                                     # no floor: solids floating in a void
+platomon --bg-lum 8 --bg-pattern checker --bg-contrast 0.8 --bg-scale 2
+platomon --bg-pattern hex --bg-scale 1.2 --bg-scroll 0.3:0.3           # three-tone hexes drifting diagonally
+platomon --bg-pattern brick --bg-sway 0.6 --bg-sway-period 6           # floor swaying in a slow circle
+platomon --bg-pattern triangles --bg-scale 0.6 --bg-contrast 1 --bg-scroll -0.5:0
+platomon --bg-pattern radial --bg-rotate ccw --bg-rotate-period 20 --camera orbit --orbit-dir cw   # floor and camera turn against each other
+platomon --bg-pattern diamond --bg-rotate cw --bg-rotate-period 30 --bg-scroll 0.4:0 --bg-sway 0.5 # rotate, scroll and sway at once
+```
+
+**Shading and performance**
+
+```
+platomon --ramp " .:-=+*#%@"                                           # the original 10-level ramp
+platomon --ramp " ░▒▓█"                                                # Unicode block shading (needs a font with these glyphs)
+platomon --spp 4 --bounces 3 --fps-max 60                              # smoother, slower, capped at 60 fps
+platomon --spp 1 --bounces 1 --fps-max 30                              # light on CPU
+platomon --fps-min 30 --fps-max 30                                     # constant 30 fps, ignore activity
+```
+
+**Snapshots (no terminal needed)**
+
+```
+platomon --snapshot 120x40 > frame.txt                                 # one frame of the default scene
+platomon --snapshot 160x48 --snapshot-time 10 --camera orbit --orbit-period 40 --bg-pattern radial --bg-rotate ccw   # 10 s into an animation
+```
+
+**Maximum density fullscreen (Windows console)**
+
+On a 2560×1440 display the classic Windows console's smallest bitmap font (Terminal, 4×6 px)
+gives a 640 × 240 grid. Cells that size are 4:6 rather than 1:2, so pass the matching
+`--char-aspect`. Set the font in the window's Properties › Font, press Alt+Enter for fullscreen, then:
+
+```
+platomon --char-aspect 0.6667 --bg-lum 1 --camera orbit --stats
+```
+
+At that resolution expect the adaptive quality to drop to `q-1`/`q-2` and tens of fps rather than 150.
 
 ## Config file
 
@@ -144,6 +241,10 @@ wins over it. Command-line options override the file.
 show = ["cpu", "ram", "nic:Ethernet", "nic:Wi-Fi"]
 camera = "orbit"
 aspect = "wxga"
+bg_lum = 3.0
+bg_pattern = "hex"
+bg_scroll = [0.3, 0.0]
+bg_rotate = "ccw"
 
 [solids]
 cpu = "truncated-icosahedron"

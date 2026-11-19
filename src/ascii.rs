@@ -4,6 +4,11 @@ use std::fmt::Write as _;
 
 use crate::aspect::Viewport;
 
+/// Default ramp: 16 luminance levels, ordered by glyph ink coverage.
+pub const DEFAULT_RAMP: &str = " .,:;-~=+*ox#%&@";
+/// The original 10-level ramp (`--ramp " .:-=+*#%@"`).
+pub const CLASSIC_RAMP: &str = " .:-=+*#%@";
+
 /// Glyph ramp, darkest first.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ramp {
@@ -36,7 +41,7 @@ impl Ramp {
 
 impl Default for Ramp {
     fn default() -> Self {
-        Self { chars: " .:-=+*#%@".chars().collect() }
+        Self { chars: DEFAULT_RAMP.chars().collect() }
     }
 }
 
@@ -119,20 +124,32 @@ mod tests {
 
     #[test]
     fn glyph_boundaries() {
+        // 16 levels, bucket i covers [i/16, (i+1)/16)
         let r = Ramp::default();
-        assert_eq!(r.len(), 10);
+        assert_eq!(r.len(), 16);
+        let expected: Vec<char> = DEFAULT_RAMP.chars().collect();
+        for (i, &c) in expected.iter().enumerate() {
+            let lo = i as f32 / 16.0;
+            assert_eq!(r.glyph(lo), c, "start of bucket {i}");
+            assert_eq!(r.glyph(lo + 1.0 / 16.0 - 1e-4), c, "end of bucket {i}");
+        }
         assert_eq!(r.glyph(0.0), ' ');
-        assert_eq!(r.glyph(0.0999), ' ');
-        assert_eq!(r.glyph(0.1), '.');
-        assert_eq!(r.glyph(0.55), '+');
-        assert_eq!(r.glyph(0.6999), '*');
-        assert_eq!(r.glyph(0.7), '#');
-        assert_eq!(r.glyph(0.8999), '%');
-        assert_eq!(r.glyph(0.9), '@');
+        assert_eq!(r.glyph(0.0624), ' ');
+        assert_eq!(r.glyph(0.0625), '.');
+        assert_eq!(r.glyph(0.5), '+');
+        assert_eq!(r.glyph(0.9375), '@');
         assert_eq!(r.glyph(1.0), '@');
         assert_eq!(r.glyph(5.0), '@');
         assert_eq!(r.glyph(-1.0), ' ');
         assert_eq!(r.glyph(f32::NAN), ' ');
+
+        // the classic 10-level ramp still works
+        let c = Ramp::new(CLASSIC_RAMP);
+        assert_eq!(c.len(), 10);
+        assert_eq!(c.glyph(0.0999), ' ');
+        assert_eq!(c.glyph(0.1), '.');
+        assert_eq!(c.glyph(0.7), '#');
+        assert_eq!(c.glyph(0.9), '@');
     }
 
     #[test]

@@ -152,7 +152,7 @@ impl Default for Config {
             max_steps: 64,
             max_dist: 50.0,
             adaptive_quality: true,
-            ramp: " .:-=+*#%@".to_string(),
+            ramp: crate::ascii::DEFAULT_RAMP.to_string(),
             char_aspect: 0.5,
             exposure: 1.0,
             show_stats: false,
