@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
 use crate::ascii::{self, Ramp};
-use crate::color::{self, ColorBy, ColorMap};
+use crate::color::{self, ColorMap};
 use crate::render::FrameView;
 use crate::scene::Scene;
 use crate::scene::sdf::SolidKind;
@@ -374,6 +374,8 @@ pub struct Overlays {
     dirty: Vec<usize>,
     tags: TagState,
     journal: Journal,
+    /// Per-frame colour table: solid × glyph level (per-solid sources).
+    lut: Vec<u32>,
 }
 
 /// What to draw this frame.
@@ -387,7 +389,8 @@ pub struct OverlayOptions<'a> {
     pub exposure: f32,
     /// Colour gradient mapping; `None` = monochrome.
     pub color: Option<&'a ColorMap>,
-    /// Each slot's load 0..=1 (for `--color-by load`).
+    /// Each solid's colour value 0..=1 for the per-solid colour sources
+    /// (load, spin, sound).
     pub levels: &'a [f32],
     /// Halo: a second, larger wireframe of every solid drawn on top, its size
     /// and brightness driven by the caller (e.g. a sound level).
@@ -428,8 +431,8 @@ const TAG_RULE: &str = "__";
 /// Columns reserved per tag when laying them out (labels change length).
 const TAG_MIN_W: usize = 14;
 /// Room kept around a solid for its halo before the tag starts, as a
-/// multiple of the solid's radius: the widest halo swing (1.5x), or just
-/// clear of the solid without a halo. The tag does not bounce with the
+/// multiple of the solid's radius: the halo's reach (1.5x when not given),
+/// or just clear of the solid without a halo. The tag does not bounce with the
 /// halo; its leader line ends at the halo wherever it is.
 const TAG_CLEAR_HALO: f32 = 1.5;
 const TAG_CLEAR_PLAIN: f32 = 1.05;
@@ -612,14 +615,13 @@ fn place_tags(
     h: usize,
     scene: &Scene,
     boxes: &[(usize, usize)],
-    halo: bool,
+    clear: f32,
     aspect: f32,
     keep_out: Option<(usize, usize, usize, usize)>,
 ) -> Vec<Option<TagAnchor>> {
     let n = scene.solids.len();
     sides.resize(n, (0, 0));
     let hw = w as f32 * 0.5;
-    let clear = if halo { TAG_CLEAR_HALO } else { TAG_CLEAR_PLAIN };
     // Placed for each solid at full size (rings: a bigger solid also sits
     // higher), so a solid growing and shrinking with its load doesn't move
     // its tag; only the camera does. The radius includes the halo's room.
@@ -781,7 +783,8 @@ fn draw_tags(
         })
         .collect();
     let boxes: Vec<(usize, usize)> = lines.iter().map(|l| tag_box(l)).collect();
-    let anchors = place_tags(&mut t.sides, frame, w, h, scene, &boxes, sizes.is_some(), aspect, t.keep_out);
+    let clear = if sizes.is_some() { opt.halo.map_or(TAG_CLEAR_HALO, |hl| hl.reach.max(TAG_CLEAR_PLAIN)) } else { TAG_CLEAR_PLAIN };
+    let anchors = place_tags(&mut t.sides, frame, w, h, scene, &boxes, clear, aspect, t.keep_out);
     let mut text_cells: Vec<usize> = Vec::new();
     let put = |c: usize, ch: char, t: &mut TagState, j: &mut Journal, cells: &mut [char], colors: &mut [u32]| {
         j.touch(c, cells, colors);
@@ -898,20 +901,27 @@ pub struct Halo {
     pub factor: f32,
     /// Luminosity of its edges 0..=1 ([`halo_lum`]).
     pub lum: f32,
+    /// The largest size it can reach this run ([`halo_reach`]): tag boxes
+    /// keep this far from their solids so the halo never runs into them.
+    pub reach: f32,
 }
 
-/// Halo size swing, as a share of the solid's radius either way.
-pub const HALO_SWING: f32 = 0.05;
-/// Extra swing with the wide option.
-pub const HALO_SWING_WIDE_EXTRA: f32 = 0.25;
+/// Halo size at the middle level, as a multiple of the solid's radius.
+pub const HALO_BASE: f32 = 1.20;
+/// Halo size swings on offer, as a share of the solid's radius either way:
+/// ±10% (1.1x..1.3x), ±30% (0.9x..1.5x) and ±60% (0.6x..1.8x).
+pub const HALO_SWINGS: [f32; 3] = [0.10, 0.30, 0.60];
 
-/// Halo size: 1.2x the solid's radius, ±5% of the radius with a level
-/// 0..=1 (e.g. a sound level: 0 = silent, 1 = loudest recently); `wide` adds another ±25%
-/// (0.9x..1.5x).
-pub fn halo_factor(level: f32, wide: bool) -> f32 {
+/// Halo size: [`HALO_BASE`] times the solid's radius, ±`swing` of the radius
+/// with a level 0..=1 (e.g. a sound level: 0 = silent, 1 = loudest recently).
+pub fn halo_factor(level: f32, swing: f32) -> f32 {
     let l = if level.is_finite() { level.clamp(0.0, 1.0) } else { 0.0 };
-    let swing = HALO_SWING + if wide { HALO_SWING_WIDE_EXTRA } else { 0.0 };
-    1.20 + swing * (2.0 * l - 1.0)
+    HALO_BASE + swing.max(0.0) * (2.0 * l - 1.0)
+}
+
+/// The largest halo with `swing`: how far tags keep clear of a solid.
+pub fn halo_reach(swing: f32) -> f32 {
+    HALO_BASE + swing.max(0.0)
 }
 
 /// Dimmest halo (silence, or no low frequencies).
@@ -933,14 +943,12 @@ pub struct HaloUpdate<'a> {
 }
 
 /// Colour of one cell with luminance `l`, as [`Overlays::colorize`] gives it.
-fn cell_color(cm: &ColorMap, frame: &FrameView<'_>, ramp: &Ramp, levels: &[f32], i: usize, l: f32) -> u32 {
-    let (n, b) = (ramp.len(), ramp.level(l));
-    match cm.by {
-        ColorBy::Lum => cm.gradient.sample((b as f32 + 0.5) / n as f32, 1.0),
-        ColorBy::Load => {
-            let id = frame.ids.get(i).copied().unwrap_or(crate::render::NO_HIT) as usize;
-            levels.get(id).map_or(color::NONE, |&lv| cm.gradient.sample(lv, load_shade(b, n)))
-        }
+fn cell_color(cm: &ColorMap, frame: &FrameView<'_>, ramp: &Ramp, levels: &[f32], n_solids: usize, i: usize, l: f32) -> u32 {
+    let id = frame.ids.get(i).copied().unwrap_or(crate::render::NO_HIT) as usize;
+    if id < n_solids {
+        cm.solid_color(levels.get(id).copied(), l, ramp.level(l), ramp.len())
+    } else {
+        cm.bg_color(l)
     }
 }
 
@@ -1013,12 +1021,6 @@ pub struct Cells<'a> {
     pub colors: Option<&'a [u32]>,
 }
 
-/// Brightness of `--color-by load` colours for glyph bucket `b` of `n`:
-/// never fully black, so the hue stays readable on dark faces.
-fn load_shade(b: usize, n: usize) -> f32 {
-    0.35 + 0.65 * (b as f32 + 0.5) / n as f32
-}
-
 impl Overlays {
     pub fn new(scene: &Scene) -> Self {
         let wires = scene.solids.iter().map(|s| Wire::new(s.poly.kind())).collect();
@@ -1035,6 +1037,7 @@ impl Overlays {
             dirty: Vec::new(),
             tags: TagState::default(),
             journal: Journal::default(),
+            lut: Vec::new(),
         }
     }
 
@@ -1080,7 +1083,7 @@ impl Overlays {
                 self.journal.touch(c, &self.cells, colors);
                 self.cells[c] = opt.ramp.glyph(l);
                 if let Some(slot) = colors.get_mut(c) {
-                    *slot = opt.color.map_or(color::NONE, |cm| cell_color(cm, frame, opt.ramp, opt.levels, c, l));
+                    *slot = opt.color.map_or(color::NONE, |cm| cell_color(cm, frame, opt.ramp, opt.levels, scene.solids.len(), c, l));
                 }
             }
             self.scratch = std::mem::replace(&mut self.halo_cells, fresh);
@@ -1118,25 +1121,52 @@ impl Overlays {
     }
 
     /// Fill `self.colors` from the final luminances.
-    fn colorize(&mut self, cm: &ColorMap, frame: &FrameView<'_>, ramp: &Ramp, levels: &[f32]) {
-        let n = ramp.len();
+    /// Glyphs and palette colours from the final luminances in one pass
+    /// (same result as [`ascii::shade`] plus [`cell_color`] per cell): the
+    /// glyph level is found once, per-solid colours come from a solid ×
+    /// level table built per frame, brightness colours index the palette
+    /// directly.
+    fn shade_colorize(&mut self, cm: &ColorMap, frame: &FrameView<'_>, ramp: &Ramp, levels: &[f32], n_solids: usize) {
+        let nr = ramp.len();
+        let per_solid = cm.by.per_solid() && cm.solid.is_some();
+        self.lut.clear();
+        if per_solid {
+            for k in 0..n_solids {
+                let v = levels.get(k).copied();
+                self.lut.extend((0..nr).map(|b| cm.solid_color(v, 0.0, b, nr)));
+            }
+        }
+        // Brightness palettes: `l` in 0..=1 → entry `⌊l·n⌋` (saturating for
+        // negatives and NaN, clamped at the top), the same as `Palette::at`.
+        let solid_lum: &[u32] = match &cm.solid {
+            Some(p) if !per_solid => p.colors(),
+            _ => &[],
+        };
+        let bg: &[u32] = cm.bg.as_ref().map_or(&[], |p| p.colors());
+        let pick = |pal: &[u32], l: f32| -> u32 {
+            match pal.len() {
+                0 => color::NONE,
+                n => pal[((l * n as f32) as usize).min(n - 1)],
+            }
+        };
+        let n_cells = self.lum.len();
+        self.cells.clear();
         self.colors.clear();
-        match cm.by {
-            ColorBy::Lum => {
-                let table: Vec<u32> = (0..n).map(|b| cm.gradient.sample((b as f32 + 0.5) / n as f32, 1.0)).collect();
-                self.colors.extend(self.lum.iter().map(|&l| table[ramp.level(l)]));
-            }
-            ColorBy::Load => {
-                // slot × bucket table
-                let table: Vec<Vec<u32>> = levels
-                    .iter()
-                    .map(|&lv| (0..n).map(|b| cm.gradient.sample(lv, load_shade(b, n))).collect())
-                    .collect();
-                self.colors.extend(self.lum.iter().enumerate().map(|(i, &l)| {
-                    let id = frame.ids.get(i).copied().unwrap_or(crate::render::NO_HIT) as usize;
-                    table.get(id).map_or(color::NONE, |t| t[ramp.level(l)])
-                }));
-            }
+        self.cells.reserve(n_cells);
+        self.colors.reserve(n_cells);
+        let ids = frame.ids;
+        for (i, &l) in self.lum.iter().enumerate() {
+            let lvl = ramp.level(l);
+            self.cells.push(ramp.glyph_at(lvl));
+            let id = ids.get(i).copied().unwrap_or(crate::render::NO_HIT) as usize;
+            let c = if id >= n_solids {
+                pick(bg, l)
+            } else if per_solid {
+                self.lut[id * nr + lvl]
+            } else {
+                pick(solid_lum, l)
+            };
+            self.colors.push(c);
         }
     }
 
@@ -1185,9 +1215,8 @@ impl Overlays {
         } else {
             self.base.clear();
         }
-        ascii::shade(&self.lum, ramp, &mut self.cells);
         if let Some(cm) = opt.color {
-            self.colorize(cm, frame, ramp, opt.levels);
+            self.shade_colorize(cm, frame, ramp, opt.levels, scene.solids.len());
             if let Some((_, panel)) = &panel {
                 // Panel background stays uncoloured so labels read clearly.
                 for y in panel.y..panel.y + panel.h {
@@ -1195,18 +1224,15 @@ impl Overlays {
                 }
             }
         }
+        if opt.color.is_none() {
+            ascii::shade(&self.lum, ramp, &mut self.cells);
+        }
         if let Some((_, panel)) = &panel {
             let mut g = Grid::new(&mut self.cells, w, h);
             if opt.color.is_some() {
                 g.colors = Some(&mut self.colors);
             }
-            let icon_ink = |slot: usize| match opt.color {
-                Some(cm) if cm.by == ColorBy::Load => {
-                    cm.gradient.sample(opt.levels.get(slot).copied().unwrap_or(0.0), 1.0)
-                }
-                Some(cm) => cm.gradient.sample(1.0, 1.0),
-                None => color::NONE,
-            };
+            let icon_ink = |slot: usize| opt.color.map_or(color::NONE, |cm| cm.icon_color(opt.levels.get(slot).copied()));
             draw_legend(&mut g, panel, &self.wires, scene, opt, &icon_ink);
         }
         // Tags float above everything, the legend included.
@@ -1281,6 +1307,7 @@ fn draw_legend(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::color::ColorBy;
     use crate::render::{RenderSettings, Renderer};
     use crate::scene::AnimParams;
 
@@ -1400,17 +1427,23 @@ mod tests {
 
     #[test]
     fn lum_colours_follow_glyph_brightness() {
-        let cm = ColorMap {
-            gradient: crate::color::Gradient::parse("grey").unwrap(),
-            by: ColorBy::Lum,
-            depth: crate::color::ColorDepth::True,
-        };
+        let grey = crate::color::Gradient::parse("grey").unwrap();
+        let cm = ColorMap::new(Some(grey.clone()), ColorBy::Lum, 16, Some(grey)).unwrap();
         let (_, chars, cols, _) = frame_full(false, None, Some(&cm));
         let cols = cols.expect("colours on");
         let ramp: Vec<char> = crate::ascii::DEFAULT_RAMP.chars().collect();
+        // 16 colours over the 16-glyph ramp: one palette entry per glyph
         for (c, col) in chars.iter().zip(&cols) {
             let b = ramp.iter().position(|r| r == c).unwrap();
-            assert_eq!(*col & 0xff, ((b as f32 + 0.5) / 16.0 * 255.0).round() as u32, "glyph {c:?}");
+            assert_eq!(*col & 0xff, (b as f32 / 15.0 * 255.0).round() as u32, "glyph {c:?}");
+        }
+        // larger palettes add steps between glyphs but stay within their size
+        for n in crate::color::PALETTE_SIZES {
+            let grey = crate::color::Gradient::parse("grey").unwrap();
+            let cm = ColorMap::new(Some(grey.clone()), ColorBy::Lum, n, Some(grey)).unwrap();
+            let (_, _, cols, _) = frame_full(false, None, Some(&cm));
+            let distinct: std::collections::HashSet<u32> = cols.unwrap().into_iter().collect();
+            assert!(distinct.len() <= n && distinct.len() > n.min(16) / 2, "{n}: {} colours", distinct.len());
         }
         let (_, _, none, _) = frame_full(false, None, None);
         assert!(none.is_none(), "monochrome has no colour buffer");
@@ -1418,11 +1451,8 @@ mod tests {
 
     #[test]
     fn load_colours_solids_only_and_legend_is_plain() {
-        let cm = ColorMap {
-            gradient: crate::color::Gradient::parse("#000000:#ff0000").unwrap(),
-            by: ColorBy::Load,
-            depth: crate::color::ColorDepth::True,
-        };
+        let red = crate::color::Gradient::parse("#000000:#ff0000").unwrap();
+        let cm = ColorMap::new(Some(red), ColorBy::Load, 16, None).unwrap();
         let (_, _, cols, ids) = frame_full(false, None, Some(&cm));
         let cols = cols.unwrap();
         for (i, (&col, &id)) in cols.iter().zip(&ids).enumerate() {
@@ -1446,6 +1476,31 @@ mod tests {
         let col = text.lines().nth(row).unwrap().find("CPU 4%").unwrap();
         assert_eq!(cols[row * W + col], color::NONE, "label text in default colour");
         assert!(cols.contains(&0xff0000), "slot 4 (full load) icon drawn in the last stop");
+    }
+
+    #[test]
+    fn background_palette_is_independent_of_the_solids() {
+        let g = |s: &str| crate::color::Gradient::parse(s).ok();
+        let ice = crate::color::Palette::ramp(&g("ice").unwrap(), 32);
+        for (solid, by) in [(g("#000000:#ff0000"), ColorBy::Load), (g("fire"), ColorBy::Lum), (None, ColorBy::Lum)] {
+            let solid_pal = solid.clone();
+            let cm = ColorMap::new(solid, by, 32, g("ice")).unwrap();
+            let (_, _, cols, ids) = frame_full(false, None, Some(&cm));
+            let cols = cols.unwrap();
+            let mut bg_seen = 0;
+            for (&col, &id) in cols.iter().zip(&ids) {
+                if (id as usize) < 5 {
+                    match &solid_pal {
+                        None => assert_eq!(col, color::NONE, "solids uncoloured"),
+                        Some(_) => assert!(cm.solid.as_ref().unwrap().colors().contains(&col), "solid #{col:06x}"),
+                    }
+                } else {
+                    assert!(ice.colors().contains(&col), "background #{col:06x} from the ice palette");
+                    bg_seen += 1;
+                }
+            }
+            assert!(bg_seen > 0);
+        }
     }
 
     fn tag_opts<'a>(ramp: &'a Ramp, labels: &'a [String], halo: Option<Halo>, wireframe: bool) -> OverlayOptions<'a> {
@@ -1498,7 +1553,7 @@ mod tests {
             let plain = Overlays::new(&scene).compose(&view, w, h, &scene, &plain_opt).chars.to_vec();
             let chars = ov.compose(&view, w, h, &scene, &opt).chars.to_vec();
             let boxes: Vec<(usize, usize)> = labels.iter().map(|l| tag_box(&tag_lines(l, false))).collect();
-            let anchors = place_tags(&mut sides, &view, w, h, &scene, &boxes, false, aspect, None);
+            let anchors = place_tags(&mut sides, &view, w, h, &scene, &boxes, TAG_CLEAR_PLAIN, aspect, None);
             let mut at = Vec::new();
             for (i, s) in scene.solids.iter().enumerate() {
                 let a = anchors[i].unwrap_or_else(|| panic!("step {step}: solid {i} tagged"));
@@ -1607,12 +1662,12 @@ mod tests {
         let view = r.view().unwrap();
         let ramp = Ramp::default();
         let labels: Vec<String> = ["CPU 12%", "RAM 40%", "GPU 3%", "DSK 1.0M", "NET 0.2M"].map(String::from).to_vec();
-        let opt = |f: f32| OverlayOptions { tag_blocks: true, ..tag_opts(&ramp, &labels, Some(Halo { factor: f, lum: 0.9 }), false) };
+        let opt = |f: f32| OverlayOptions { tag_blocks: true, ..tag_opts(&ramp, &labels, Some(Halo { factor: f, lum: 0.9, reach: TAG_CLEAR_HALO }), false) };
         let mut inc = Overlays::new(&scene);
         let mut chars = inc.compose(&view, w, h, &scene, &opt(1.2)).chars.to_vec();
         let aspect = frame_aspect(&view);
         let boxes: Vec<(usize, usize)> = labels.iter().map(|l| tag_box(&tag_lines(l, true))).collect();
-        let anchors = place_tags(&mut Vec::new(), &view, w, h, &scene, &boxes, true, aspect, None);
+        let anchors = place_tags(&mut Vec::new(), &view, w, h, &scene, &boxes, TAG_CLEAR_HALO, aspect, None);
         for (i, (a, l)) in anchors.iter().zip(&labels).enumerate() {
             let a = a.unwrap();
             let rows = tag_lines(l, true);
@@ -1679,7 +1734,7 @@ mod tests {
             r.render(&scene, w, h, &RenderSettings { spp: 1, ..RenderSettings::default() });
             let view = r.view().unwrap();
             let boxes: Vec<(usize, usize)> = labels.iter().map(|l| tag_box(&tag_lines(l, false))).collect();
-            let a = place_tags(&mut sides, &view, w, h, &scene, &boxes, true, frame_aspect(&view), None);
+            let a = place_tags(&mut sides, &view, w, h, &scene, &boxes, TAG_CLEAR_HALO, frame_aspect(&view), None);
             assert!(a.iter().all(Option::is_some));
             match &first {
                 None => first = Some(a),
@@ -1721,7 +1776,7 @@ mod tests {
         for wireframe in [false, true] {
             let mut inc = Overlays::new(&scene);
             let steps = [1.15, 1.45, 1.45, 1.2, 1.0, 1.5];
-            let opt = |f: f32| tag_opts(&ramp, &labels, Some(Halo { factor: f, lum: 0.9 }), wireframe);
+            let opt = |f: f32| tag_opts(&ramp, &labels, Some(Halo { factor: f, lum: 0.9, reach: TAG_CLEAR_HALO }), wireframe);
             let mut chars = inc.compose(&view, w, h, &scene, &opt(steps[0])).chars.to_vec();
             for (k, &f) in steps.iter().enumerate().skip(1) {
                 let u = inc.update_halo(&view, w, h, &scene, &opt(f));
@@ -1754,17 +1809,16 @@ mod tests {
     }
 
     #[test]
-    fn halo_factor_spans_plus_minus_five_percent_around_1_2() {
-        assert!((halo_factor(0.0, false) - 1.15).abs() < 1e-6);
-        assert!((halo_factor(0.5, false) - 1.20).abs() < 1e-6);
-        assert!((halo_factor(1.0, false) - 1.25).abs() < 1e-6);
-        assert_eq!(halo_factor(7.0, false), halo_factor(1.0, false));
-        assert_eq!(halo_factor(f32::NAN, false), halo_factor(0.0, false));
-        // wide: an extra ±25% of the radius, ±30% in all
-        assert!((halo_factor(0.0, true) - 0.90).abs() < 1e-6);
-        assert!((halo_factor(0.5, true) - 1.20).abs() < 1e-6);
-        assert!((halo_factor(1.0, true) - 1.50).abs() < 1e-6);
-        assert_eq!(halo_factor(f32::NAN, true), halo_factor(0.0, true));
+    fn halo_factor_swings_10_30_or_60_percent_around_1_2() {
+        for (swing, lo, hi) in [(0.10, 1.10, 1.30), (0.30, 0.90, 1.50), (0.60, 0.60, 1.80)] {
+            assert!((halo_factor(0.0, swing) - lo).abs() < 1e-6, "{swing}");
+            assert!((halo_factor(0.5, swing) - 1.20).abs() < 1e-6, "{swing}");
+            assert!((halo_factor(1.0, swing) - hi).abs() < 1e-6, "{swing}");
+            assert!((halo_reach(swing) - hi).abs() < 1e-6, "{swing}");
+            assert_eq!(halo_factor(7.0, swing), halo_factor(1.0, swing));
+            assert_eq!(halo_factor(f32::NAN, swing), halo_factor(0.0, swing));
+        }
+        assert_eq!(HALO_SWINGS, [0.10, 0.30, 0.60]);
     }
 
     #[test]
@@ -1776,13 +1830,13 @@ mod tests {
     }
 
     fn bright(factor: f32) -> Option<Halo> {
-        Some(Halo { factor, lum: 1.0 })
+        Some(Halo { factor, lum: 1.0, reach: TAG_CLEAR_HALO })
     }
 
     #[test]
     fn sound_halo_draws_its_luminosity() {
         for lum in [0.0, 0.5, 1.0] {
-            let (_, out, _, _) = frame_halo(false, None, None, Some(Halo { factor: 1.2, lum }));
+            let (_, out, _, _) = frame_halo(false, None, None, Some(Halo { factor: 1.2, lum, reach: TAG_CLEAR_HALO }));
             let (_, plain, _, _) = frame_halo(false, None, None, None);
             let g = Ramp::default().glyph(lum);
             let changed: Vec<char> = plain.iter().zip(&out).filter(|(a, b)| a != b).map(|(_, b)| *b).collect();
@@ -1799,13 +1853,11 @@ mod tests {
         let view = r.view().unwrap();
         let ramp = Ramp::default();
         let levels = [0.0, 0.25, 0.5, 0.75, 1.0];
-        let lum_cm = ColorMap {
-            gradient: crate::color::Gradient::parse("inferno").unwrap(),
-            by: ColorBy::Lum,
-            depth: crate::color::ColorDepth::True,
-        };
-        let load_cm = ColorMap { by: ColorBy::Load, ..lum_cm.clone() };
-        for (wireframe, cm) in [(false, None), (true, Some(&lum_cm)), (true, Some(&load_cm))] {
+        let g = |s: &str| crate::color::Gradient::parse(s).ok();
+        let lum_cm = ColorMap::new(g("inferno"), ColorBy::Lum, 64, g("inferno")).unwrap();
+        let load_cm = ColorMap::new(g("inferno"), ColorBy::Load, 16, None).unwrap();
+        let spin_cm = ColorMap::new(g("plasma"), ColorBy::Spin, 128, g("ice")).unwrap();
+        for (wireframe, cm) in [(false, None), (true, Some(&lum_cm)), (true, Some(&load_cm)), (false, Some(&spin_cm))] {
             let opt = |halo| OverlayOptions {
                 wireframe,
                 legend: None,
@@ -1823,12 +1875,12 @@ mod tests {
                 tag_blocks: false,
             };
             let steps = [
-                Some(Halo { factor: 1.15, lum: 0.2 }),
-                Some(Halo { factor: 1.25, lum: 0.9 }),
-                Some(Halo { factor: 1.25, lum: 0.9 }),
-                Some(Halo { factor: 1.18, lum: 0.5 }),
+                Some(Halo { factor: 1.15, lum: 0.2, reach: TAG_CLEAR_HALO }),
+                Some(Halo { factor: 1.25, lum: 0.9, reach: TAG_CLEAR_HALO }),
+                Some(Halo { factor: 1.25, lum: 0.9, reach: TAG_CLEAR_HALO }),
+                Some(Halo { factor: 1.18, lum: 0.5, reach: TAG_CLEAR_HALO }),
                 None,
-                Some(Halo { factor: 1.2, lum: 1.0 }),
+                Some(Halo { factor: 1.2, lum: 1.0, reach: TAG_CLEAR_HALO }),
             ];
             let mut inc = Overlays::new(&scene);
             let first = inc.compose(&view, W, H, &scene, &opt(steps[0]));
@@ -1871,7 +1923,7 @@ mod tests {
             exposure: 1.0,
             color: None,
             levels: &[],
-            halo: Some(Halo { factor: 1.2, lum: 1.0 }),
+            halo: Some(Halo { factor: 1.2, lum: 1.0, reach: TAG_CLEAR_HALO }),
             halo_factors: f,
             tags: false,
             tag_labels: &[],
@@ -1920,8 +1972,8 @@ mod tests {
             let (_, out, _, _) = frame_halo(false, None, None, bright(f));
             plain.iter().zip(&out).enumerate().filter(|(_, (a, b))| a != b).map(|(i, _)| i).collect::<Vec<_>>()
         };
-        let quiet = changed(halo_factor(0.0, false));
-        let loud = changed(halo_factor(1.0, false));
+        let quiet = changed(halo_factor(0.0, HALO_SWINGS[0]));
+        let loud = changed(halo_factor(1.0, HALO_SWINGS[0]));
         assert!(quiet.len() > 50, "halo drawn: {}", quiet.len());
         assert!(quiet.len() < plain.len() / 3);
         // ids 0..5 are the demo's solids; anything else is background
@@ -1947,8 +1999,8 @@ mod tests {
         };
         assert!(spread(&loud) > spread(&quiet), "{} vs {}", spread(&loud), spread(&quiet));
         // the wide swing goes further out when loud and inside the solid when quiet
-        let wide_loud = changed(halo_factor(1.0, true));
-        let wide_quiet = changed(halo_factor(0.0, true));
+        let wide_loud = changed(halo_factor(1.0, HALO_SWINGS[1]));
+        let wide_quiet = changed(halo_factor(0.0, HALO_SWINGS[1]));
         assert!(spread(&wide_loud) > spread(&loud), "{} vs {}", spread(&wide_loud), spread(&loud));
         assert!(spread(&wide_quiet) < spread(&quiet), "{} vs {}", spread(&wide_quiet), spread(&quiet));
         let on_solids = wide_quiet.iter().filter(|&&i| ids[i] < 5).count();

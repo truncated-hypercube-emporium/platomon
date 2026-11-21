@@ -8,7 +8,7 @@ use crossterm::{cursor, event, execute, terminal};
 use platomon::ascii::{self, Ramp, StatsLine};
 use platomon::aspect::{self, AspectMode, PRESETS};
 use platomon::clock::{self, FrameClock, SPIN_MARGIN};
-use platomon::color::{self, ColorBy, ColorDepth, ColorMap, Gradient};
+use platomon::color::{self, ColorBy, ColorMap, Gradient};
 use platomon::collector::{Collector, gpu::GpuSampler, system::SystemSampler};
 use platomon::config::{Config, SlotSpec, split_assignment};
 use platomon::metrics::{Channel, MetricKind, MetricsState, Reading, activity_score};
@@ -126,12 +126,15 @@ struct Cli {
     /// Colour gradient: off, a preset (see --list gradients) or hex stops like "#000:#f80:#fff".
     #[arg(long, value_name = "GRADIENT")]
     color: Option<String>,
-    /// What picks the colour: lum (brightness) or load (each solid by its metric). Implies a default gradient.
-    #[arg(long, value_name = "lum|load")]
+    /// What picks the solids' colour: lum (brightness), load (each solid by its metric) or spin (speed and direction seen from the camera). Implies a default gradient.
+    #[arg(long, value_name = "lum|load|spin")]
     color_by: Option<ColorBy>,
-    /// Colour codes: 24bit or 256.
-    #[arg(long, value_name = "24bit|256")]
-    color_depth: Option<ColorDepth>,
+    /// Palette size: 16, 32, 64 or 128 colours per gradient (default 16).
+    #[arg(long, value_name = "16|32|64|128", value_parser = ["16", "32", "64", "128"])]
+    colors: Option<String>,
+    /// Background colouring: auto, off, match (the solids' gradient by brightness) or a gradient of its own.
+    #[arg(long, value_name = "auto|off|match|GRADIENT")]
+    bg_color: Option<String>,
     /// Run the gradient backwards.
     #[arg(long)]
     color_reverse: bool,
@@ -150,7 +153,7 @@ struct Cli {
     aspect_mode: Option<AspectMode>,
 
     // ---- camera
-    /// static, orbit (circle the centroid of the solids) or focus (glide toward the busiest solid).
+    /// static, orbit (circle the centroid of the solids), focus (glide toward the busiest solid), tilt (orbit while rising 20-80° and back, holding half a period at each end) or resonance (orbit with three 20° up-and-down waves per turn).
     #[arg(long, value_name = "MODE")]
     camera: Option<CameraMode>,
     /// Focus camera: 0 = only turn toward the busiest solid, 1 = close-up.
@@ -226,7 +229,13 @@ fn apply_cli(cfg: &mut Config, cli: &Cli) -> Result<(), String> {
     set!(spp, bounces, fps_min, fps_max, ramp, char_aspect, aspect, aspect_mode, camera, orbit_period, orbit_dir, orbit_bob);
     set!(bg_lum, bg_pattern, bg_contrast, bg_scale, bg_sway, bg_sway_period, bg_rotate, bg_rotate_period, bg_waves, bg_wave_speed);
     set!(legend_size, legend_opacity, legend_pos);
-    set!(color, color_by, color_depth, layout, focus_zoom, focus_tau);
+    set!(color, color_by, bg_color, layout, focus_zoom, focus_tau);
+    if let Some(n) = &cli.colors {
+        cfg.colors = n.parse().unwrap_or(color::DEFAULT_COLORS);
+    }
+    if cfg.color_by == ColorBy::Sound {
+        return Err("--color-by sound needs an output-device sound meter, which only the Windows screensaver has".into());
+    }
     if cli.color_reverse {
         cfg.color_reverse = true;
     }
@@ -357,15 +366,15 @@ fn list(what: ListWhat) {
             println!("\nTiles alternate around --bg-lum by --bg-contrast; --bg-scale sets tile size (the quasicrystal's wavelength).");
         }
         ListWhat::Gradients => {
-            println!("{:<9} {:<32} DESCRIPTION", "GRADIENT", "SWATCH (24-bit)");
+            println!("{:<9} {:<32} DESCRIPTION", "GRADIENT", "SWATCH (32 colours)");
             for (id, desc, stops) in color::PRESETS {
                 let g = Gradient::from_stops(stops);
                 let mut bar = String::new();
                 for i in 0..32 {
-                    color::push_sgr(&mut bar, g.sample(i as f32 / 31.0, 1.0), ColorDepth::True);
+                    color::push_sgr(&mut bar, g.sample(i as f32 / 31.0, 1.0));
                     bar.push('█');
                 }
-                color::push_sgr(&mut bar, color::NONE, ColorDepth::True);
+                color::push_sgr(&mut bar, color::NONE);
                 println!("{id:<9} {bar} {desc}");
             }
             println!("\nOr 2+ hex stops, dark/idle first: --color \"#000:#f80:#fff\". --color-reverse flips any gradient.");
@@ -476,7 +485,11 @@ fn snapshot(cfg: &Config, slots: &[SlotSpec], ratio: Option<f32>, (w, h): (usize
         ramp: &Ramp::new(&cfg.ramp),
         exposure: cfg.exposure,
         color: cmap.as_ref(),
-        levels: &ch.iter().map(|c| c.level).collect::<Vec<_>>(),
+        levels: &{
+            let mut v = Vec::new();
+            scene.color_values(cfg.color_by, &ch, &mut v);
+            v
+        },
         halo: None,
         halo_factors: &[],
         tags: cfg.tags,
@@ -488,7 +501,7 @@ fn snapshot(cfg: &Config, slots: &[SlotSpec], ratio: Option<f32>, (w, h): (usize
     let mut s = String::new();
     if let Some(view) = r.view() {
         let cells = overlays.compose(&view, vp.w, vp.h, &scene, &opt);
-        let colors = cells.colors.zip(cmap.as_ref().map(|m| m.depth));
+        let colors = cells.colors;
         ascii::compose_plain(cells.chars, colors, vp.w, vp.h, &mut s);
     }
     s
@@ -743,8 +756,7 @@ fn run(
         let channels = metrics.channels();
         fps.update_target(activity_score(&channels, &weights), dt);
         scene.update(&channels, &anim, dt);
-        levels.clear();
-        levels.extend(channels.iter().map(|c| if c.available { c.level } else { 0.0 }));
+        scene.color_values(cfg.color_by, &channels, &mut levels);
 
         let area_h = (rows as usize).saturating_sub(show_stats as usize);
         let vp = aspect::viewport(cols as usize, area_h, ratio, cfg.aspect_mode, cfg.char_aspect);
@@ -783,7 +795,7 @@ fn run(
         };
         if let Some(view) = renderer.view() {
             let cells = overlays.compose(&view, vp.w, vp.h, &scene, &opt);
-            let colors = cells.colors.zip(cmap.map(|m| m.depth));
+            let colors = cells.colors;
             ascii::compose_terminal(cells.chars, colors, &vp, (cols as usize, area_h), stats, &mut frame);
         }
         let render_secs = t0.elapsed().as_secs_f32();

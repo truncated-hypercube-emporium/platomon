@@ -1,4 +1,4 @@
-# platomon 1.3
+# platomon 1.4
 
 A terminal system monitor: one path-traced polyhedron per metric, rendered in monochrome ASCII on
 concentric rings. Each solid's scale and spin follow its metric; the frame rate (5–150 fps) follows
@@ -39,7 +39,7 @@ platomon [OPTIONS]
 | `--aspect` | `fill`, preset or `W:H` | `fill` |
 | `--aspect-mode` | `letterbox\|crop` | `letterbox` |
 | **Camera** | | |
-| `--camera` | `static\|orbit\|focus` (focus: glide toward the busiest solid) | `static` |
+| `--camera` | `static\|orbit\|focus\|tilt\|resonance` (focus: glide toward the busiest solid; tilt: orbit while rising 20–80° and back; resonance: orbit with three 20° waves per turn) | `static` |
 | `--focus-zoom` | `0..1`: 0 = only turn toward the busiest solid, 1 = close-up | 0.6 |
 | `--focus-tau` | glide time constant, seconds | 1.5 |
 | `--orbit-period` | seconds per revolution | 60 |
@@ -71,8 +71,9 @@ platomon [OPTIONS]
 | `--tag-blocks` | flag: tag text in three-row block letters, for small fonts | off |
 | **Colour** | | |
 | `--color` | `off`, a preset (`--list gradients`) or 2+ hex stops, e.g. `"#000:#f80:#fff"` | `off` |
-| `--color-by` | `lum` (brightness → gradient) or `load` (each solid by its metric) | `lum` |
-| `--color-depth` | `24bit` or `256` (xterm palette, for older terminals) | `24bit` |
+| `--color-by` | `lum` (brightness → gradient), `load` (each solid by its metric) or `spin` (each solid by its spin speed and direction) | `lum` |
+| `--colors` | palette size: `16`, `32`, `64` or `128` colours per gradient | `16` |
+| `--bg-color` | background colouring, independent of the solids: `auto`, `off`, `match` (the solids' gradient by brightness) or a gradient of its own | `auto` |
 | `--color-reverse` | flag: run the gradient backwards | off |
 
 Any `--legend-*` option turns the legend on. `--color-by` or `--color-reverse` without `--color`
@@ -90,6 +91,21 @@ position: `--focus-zoom 0` stays at overview distance and only turns, `1` comes 
 To stop the camera darting between near-equal metrics, a new solid must lead the current one by 5
 percentage points for a full second before the camera switches.
 
+### Tilt camera
+
+`--camera tilt` orbits like `orbit` (one turn per `--orbit-period`, direction from `--orbit-dir`)
+and at the same time lifts along a vertical arc over the orbit point, from 20° to 80° elevation
+above the look-at point (never straight down at the floor), at the overview distance throughout.
+The rise takes one orbital period, easing in and out; at each end it holds for half a period while
+the orbit carries on, then travels back. It starts on its way up at the overview's elevation.
+
+### Resonance camera
+
+`--camera resonance` orbits on a third-order (3:1) disc resonance: while it circles once, its
+elevation rises and falls sinusoidally three times over a 20° range centred on the overview's
+elevation, and its distance breathes ±8% in step, so the closed path is a three-lobed rosette that
+repeats every orbit.
+
 ### Sphere layout
 
 `--layout sphere` places the solids on concentric spherical shells instead of rings on the ground.
@@ -101,14 +117,28 @@ centres rather than resting on the ground.
 
 ### Colour
 
-Colour is off by default (pure monochrome). `--color GRADIENT` maps each cell through a gradient,
-using one of two sources:
+Colour is off by default (pure monochrome). `--color GRADIENT` samples a gradient into a fixed
+palette of `--colors` 16 (default), 32, 64 or 128 colours, and every coloured cell takes one of
+them. The solids' colour comes from one of these sources:
 
-- `--color-by lum`: the cell's brightness, so dark glyphs take the first stop and bright glyphs the
-  last. One colour per glyph level, so colour changes only where the glyph does.
+- `--color-by lum`: the cell's brightness, so dark cells take the first stop and bright cells the
+  last. With 16 colours and the 16-glyph ramp that is one colour per glyph; larger palettes add
+  steps between glyph levels.
 - `--color-by load`: each solid takes the colour at its metric's load (idle = first stop, full =
-  last stop), shaded by brightness. The background and legend text keep the terminal's default
-  colour; legend icons take their solid's colour.
+  last stop), shaded by brightness. Legend icons take their solid's colour.
+- `--color-by spin`: each solid by its spin as seen from the camera. The middle of the gradient is
+  still (or spinning edge-on), toward the last stop is faster counter-clockwise, toward the first
+  stop faster clockwise; shaded by brightness.
+
+For the shaded sources the palette is positions along the gradient × brightness shades: 16 colours
+are 8 positions × 2 shades, larger palettes have 4 shades (8, 16 or 32 positions).
+
+`--bg-color` maps the background (floor and sky) on its own, always by brightness: `auto` (default)
+colours it with the solids' gradient when they are coloured by brightness and leaves it uncoloured
+otherwise, `off` leaves it uncoloured, `match` uses the solids' gradient whatever colours the
+solids, and a preset or hex stops give it a gradient of its own (in its own palette of the same
+size). With `--color off` and a background gradient only the background is coloured. Legend text
+keeps the terminal's default colour.
 
 | Gradient | Colours |
 |---|---|
@@ -127,7 +157,10 @@ using one of two sources:
 
 Custom gradients take two or more hex stops (`#rgb` or `#rrggbb`, `#` optional), evenly spaced,
 separated by `:`, `,`, `;`, `/` or spaces. Colour escapes add to the bytes written per frame,
-so very large grids on slow consoles may lose some fps; `--color-depth 256` is a little shorter.
+so very large grids on slow consoles may lose some fps. (24-bit colour and `--color-depth` were
+removed in 1.4: a `color_depth` key in an older config file is ignored.) The tone curve that turns
+radiance into brightness is read from a table (within 2e-6 of the exact curve), and each cell's
+glyph and colour are picked in one pass.
 
 ### Luminosity levels
 
@@ -320,11 +353,15 @@ platomon --bg-pattern diamond --bg-rotate cw --bg-rotate-period 30 --bg-scroll 0
 ```
 platomon --camera focus                                                # glide toward the busiest solid
 platomon --camera focus --focus-zoom 1 --focus-tau 3                   # slow, full close-ups
+platomon --camera tilt --orbit-period 40                               # orbit, rising 20-80 degrees over 40 s
+platomon --camera resonance --orbit-period 60                          # three 20-degree waves per minute-long orbit
 platomon --layout sphere --show "cpu,ram,disk,net,gpu,nic,disk-dev"    # one shell of 7
 platomon --layout sphere --ring cpu=0 --ring ram=1 --ring disk=1 --ring net=1 --ring gpu=1   # CPU at the centre of a shell
 platomon --color inferno                                               # brightness through inferno
 platomon --color-by load                                               # each solid green → red with its load (traffic)
-platomon --color viridis --color-by load --color-depth 256             # 256-colour terminals
+platomon --color viridis --color-by load --colors 64                   # 64-colour palette
+platomon --color plasma --color-by spin --bg-color ice                 # solids by spin, floor in ice
+platomon --color-by load --bg-color off                                # solids only, background uncoloured
 platomon --color "#001020:#0080ff:#ffffff" --bg-lum 1                  # custom three-stop gradient
 platomon --layout sphere --camera focus --color-by load --legend --wireframe   # everything at once
 ```
