@@ -96,6 +96,14 @@ pub struct Config {
     pub legend_pos: LegendPos,
     /// Inverted-luminosity wireframe over every solid (key `w`).
     pub wireframe: bool,
+    /// Solid tags: each solid's metric floats at a fixed place on screen with
+    /// a leader line to the solid (key `t`).
+    pub tags: bool,
+    /// Tag colour with a gradient on: `theme`, `complement`, `white` or
+    /// `#RRGGBB` (always lifted to stay readable on black).
+    pub tag_color: String,
+    /// Tag text as three-row block letters (for small text).
+    pub tag_blocks: bool,
 
     // --- colour ---
     /// `off`, a gradient preset (`inferno`, `viridis`, `traffic`, ...) or hex
@@ -199,6 +207,9 @@ impl Default for Config {
             legend_opacity: LegendParams::default().opacity,
             legend_pos: LegendPos::TopLeft,
             wireframe: false,
+            tags: false,
+            tag_color: "complement".to_string(),
+            tag_blocks: false,
             color: "off".to_string(),
             color_by: ColorBy::Lum,
             color_depth: ColorDepth::True,
@@ -365,6 +376,13 @@ impl Config {
             rotate: self.bg_rotate,
             rotate_period: self.bg_rotate_period,
         }
+    }
+
+    /// Tag colour for this configuration's gradient (`cmap`); the default
+    /// text colour in monochrome or for an unknown `tag_color`.
+    pub fn tag_ink(&self, cmap: Option<&ColorMap>) -> u32 {
+        let mode = self.tag_color.parse::<crate::color::TagColor>().unwrap_or(crate::color::TagColor::Complement);
+        mode.resolve(cmap.map(|m| &m.gradient))
     }
 
     /// The colour mapping, or `None` for monochrome (`color = "off"`).

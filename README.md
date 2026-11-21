@@ -4,7 +4,8 @@ A terminal system monitor: one path-traced polyhedron per metric, rendered in mo
 concentric rings. Each solid's scale and spin follow its metric; the frame rate (5–150 fps) follows
 total activity.
 
-Keys: `s` toggles the stats bar, `l` the legend, `w` the wireframe overlay; `q` / `Esc` / `Ctrl-C` quit.
+Keys: `s` toggles the stats bar, `l` the legend, `w` the wireframe overlay, `t` the solid tags; `q` / `Esc` /
+`Ctrl-C` quit.
 
 ## Launch parameters
 
@@ -63,6 +64,9 @@ platomon [OPTIONS]
 | `--legend-opacity` | `0..1` panel background: 0 = see-through, 1 = solid | 0.85 |
 | `--legend-pos` | `tl\|tr\|bl\|br` (or `top-left`, …) | `tl` |
 | `--wireframe` | flag: each solid's visible edges drawn in inverted luminosity | off |
+| `--tags` | flag: each solid's metric travels with it, with a short leader line | off |
+| `--tag-color` | `theme`, `complement`, `white` or `#RRGGBB` (with a gradient; always lifted to stay readable) | `complement` |
+| `--tag-blocks` | flag: tag text in three-row block letters, for small fonts | off |
 | **Colour** | | |
 | `--color` | `off`, a preset (`--list gradients`) or 2+ hex stops, e.g. `"#000:#f80:#fff"` | `off` |
 | `--color-by` | `lum` (brightness → gradient) or `load` (each solid by its metric) | `lum` |
@@ -180,6 +184,29 @@ dark on bright faces, bright on shadow or a black background. Mid-grey cells are
 6 glyph levels away, so edges stay visible everywhere. Edges on the far side of a solid, or behind
 another solid, are hidden.
 
+### Solid tags
+
+`--tags` (key `t`) labels every solid with its live reading (`__RAM 42%__`). Each tag travels with
+its solid, just above it on the diagonal toward the edge of the picture, with its text running
+outward and a short diagonal leader line (`/`, `\`, or `|` when steep; never horizontal) that only
+spans the gap from the tag's inner corner to the solid's surface or wireframe. Tags are placed for
+the solid at full size, so they hold still while solids grow and shrink with their load and only
+move with the camera. Each tag box sits as close to its solid as it can while staying clear of it
+and of every other solid; tags avoid each other and the edges of the picture, keep their side until
+a solid is well past the centre, and are drawn over everything, legend included.
+
+With a colour gradient, `--tag-color` picks the tag colour: `complement` (default) uses the hue
+opposite the gradient's dominant one, `theme` its most vivid bright colour, `white` plain white, or a
+`#RRGGBB` of your own. Every choice is lifted toward white until it reaches at least 11:1 contrast
+against the black background. Monochrome tags use the terminal's text colour. `--tag-blocks` draws
+the text as three-row block letters made of ordinary glyphs (`_ | / \ ( )`), easier to read when the
+font is only a few pixels high:
+
+```
+  _   _               _
+ |_) |_| |\/|    |_|  _) o/
+ | \ | | |  |      | (_  /o
+```
 ### Metrics
 
 | Metric | Scale | Spin | Default solid |
@@ -305,6 +332,8 @@ platomon --legend-pos br --legend-size 1 --legend-opacity 0.5          # compact
 platomon --legend-pos tr --legend-size 4 --legend-opacity 1            # block-letter labels on a solid panel
 platomon --wireframe --bg-lum 0 --camera orbit                         # bright edges on solids floating in a void
 platomon --show "cpu,ram,disk,net,gpu,nic,disk-dev" --legend-size 3 --legend-pos bl --wireframe --stats
+platomon --tags --color inferno --camera orbit                         # metric tags that follow the solids
+platomon --tags --tag-blocks --tag-color theme --color viridis         # block-letter tags in the theme's colour
 ```
 
 **Shading and performance**
@@ -370,6 +399,7 @@ cargo build --release                       # with NVIDIA NVML support (loaded a
 cargo build --release --no-default-features # without
 cargo test
 cargo bench --bench render
+cargo run --release --example ground_bench  # frame time with the background off, solid and in each pattern
 ```
 
 ## Notes
@@ -379,6 +409,11 @@ cargo bench --bench render
 - **Feedback guard**: platomon's own CPU (per-core % ÷ cores) is subtracted from system CPU.
 - **Activity score**: weighted mean over available metrics. For RAM it uses the rate of change, since
   a fill level isn't activity.
+- **Background plane**: rays only test the solids whose bounding spheres they pass through, and only
+  over that stretch; two per-frame lookup tables list the solids each 8×8-cell screen tile can show
+  and the solids that can shadow each cell of a 128×128 grid on the ground, so most background
+  pixels test no solid at all; ground bounces and light sampling use precomputed direction tables.
+  A 640×240 frame with 16 solids and a checkerboard renders in about 6 ms instead of 14 ms.
 - **Adaptive quality**: when render time exceeds ~90% of the frame budget, spp drops to 1, then
   bounces to 1 (`q-1` / `q-2` in the stats bar); restored once there is headroom.
 - **Polyhedra** are intersections of face planes. Vertices are recovered from the planes, and tests
