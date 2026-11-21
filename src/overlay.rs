@@ -451,6 +451,9 @@ struct TagState {
     sides: Vec<(i8, i8)>,
     /// Cells holding tag text this frame (cleared after drawing).
     text_mask: Vec<bool>,
+    /// The legend panel (rows r0..=r1, columns c0..=c1) from the last full
+    /// compose: tags and their leader lines keep out of it.
+    keep_out: Option<(usize, usize, usize, usize)>,
     /// (cell, glyph, colour) under each tag cell drawn last.
     under: Vec<(usize, char, u32)>,
     /// Per-cell stamp: cells already in `under` this frame.
@@ -611,6 +614,7 @@ fn place_tags(
     boxes: &[(usize, usize)],
     halo: bool,
     aspect: f32,
+    keep_out: Option<(usize, usize, usize, usize)>,
 ) -> Vec<Option<TagAnchor>> {
     let n = scene.solids.len();
     sides.resize(n, (0, 0));
@@ -639,7 +643,8 @@ fn place_tags(
         let r = |i: usize| circles[i].map_or(0.0, |c| c.1);
         r(b).total_cmp(&r(a))
     });
-    let mut placed: Vec<(usize, usize, usize, usize)> = Vec::new(); // (row0, row1, col0, col1)
+    // (row0, row1, col0, col1); the legend panel counts as taken.
+    let mut placed: Vec<(usize, usize, usize, usize)> = keep_out.into_iter().collect();
     let mut out = vec![None; n];
     for i in order {
         let Some(((cx, cy), rr)) = circles[i] else { continue };
@@ -776,7 +781,7 @@ fn draw_tags(
         })
         .collect();
     let boxes: Vec<(usize, usize)> = lines.iter().map(|l| tag_box(l)).collect();
-    let anchors = place_tags(&mut t.sides, frame, w, h, scene, &boxes, sizes.is_some(), aspect);
+    let anchors = place_tags(&mut t.sides, frame, w, h, scene, &boxes, sizes.is_some(), aspect, t.keep_out);
     let mut text_cells: Vec<usize> = Vec::new();
     let put = |c: usize, ch: char, t: &mut TagState, j: &mut Journal, cells: &mut [char], colors: &mut [u32]| {
         j.touch(c, cells, colors);
@@ -861,7 +866,11 @@ fn draw_tags(
                     break;
                 }
             }
-            if t.text_mask[c] {
+            let in_legend = t.keep_out.is_some_and(|(r0, r1, c0, c1)| {
+                let (row, col) = (c / w, c % w);
+                (r0..=r1).contains(&row) && (c0..=c1).contains(&col)
+            });
+            if t.text_mask[c] || in_legend {
                 continue;
             }
             put(c, ch, t, j, cells, colors);
@@ -1204,6 +1213,7 @@ impl Overlays {
         self.journal.on = false;
         let colors: &mut [u32] = if opt.color.is_some() && self.colors.len() == w * h { &mut self.colors } else { &mut [] };
         let wire = opt.wireframe.then_some(&self.mask[..]).filter(|m| m.len() == w * h);
+        self.tags.keep_out = panel.as_ref().map(|(_, p)| (p.y, p.y + p.h.max(1) - 1, p.x, p.x + p.w.max(1) - 1));
         draw_tags(&mut self.tags, &mut self.journal, &mut self.cells, colors, &self.halo_mask, wire, frame, w, h, scene, opt);
         Cells { chars: &self.cells, colors: opt.color.is_some().then_some(&self.colors[..]) }
     }
@@ -1488,7 +1498,7 @@ mod tests {
             let plain = Overlays::new(&scene).compose(&view, w, h, &scene, &plain_opt).chars.to_vec();
             let chars = ov.compose(&view, w, h, &scene, &opt).chars.to_vec();
             let boxes: Vec<(usize, usize)> = labels.iter().map(|l| tag_box(&tag_lines(l, false))).collect();
-            let anchors = place_tags(&mut sides, &view, w, h, &scene, &boxes, false, aspect);
+            let anchors = place_tags(&mut sides, &view, w, h, &scene, &boxes, false, aspect, None);
             let mut at = Vec::new();
             for (i, s) in scene.solids.iter().enumerate() {
                 let a = anchors[i].unwrap_or_else(|| panic!("step {step}: solid {i} tagged"));
@@ -1602,7 +1612,7 @@ mod tests {
         let mut chars = inc.compose(&view, w, h, &scene, &opt(1.2)).chars.to_vec();
         let aspect = frame_aspect(&view);
         let boxes: Vec<(usize, usize)> = labels.iter().map(|l| tag_box(&tag_lines(l, true))).collect();
-        let anchors = place_tags(&mut Vec::new(), &view, w, h, &scene, &boxes, true, aspect);
+        let anchors = place_tags(&mut Vec::new(), &view, w, h, &scene, &boxes, true, aspect, None);
         for (i, (a, l)) in anchors.iter().zip(&labels).enumerate() {
             let a = a.unwrap();
             let rows = tag_lines(l, true);
@@ -1630,6 +1640,31 @@ mod tests {
     }
 
     #[test]
+    fn tags_keep_out_of_the_legend() {
+        let scene = Scene::demo(&AnimParams::default());
+        let ramp = Ramp::default();
+        let labels: Vec<String> = ["CPU 12%", "RAM 40%", "GPU 3%", "DSK 1.0M", "NET 0.2M"].map(String::from).to_vec();
+        for (w, h, pos, size) in [(120, 40, LegendPos::TopLeft, 2), (160, 50, LegendPos::BottomRight, 3), (100, 34, LegendPos::TopRight, 1)] {
+            let mut r = Renderer::new();
+            r.render(&scene, w, h, &RenderSettings { spp: 1, ..RenderSettings::default() });
+            let view = r.view().unwrap();
+            let legend = LegendParams { size, opacity: 1.0, pos };
+            let with = |tags: bool| {
+                let opt = OverlayOptions { legend: Some(&legend), tags, ..tag_opts(&ramp, &labels, None, true) };
+                Overlays::new(&scene).compose(&view, w, h, &scene, &opt).chars.to_vec()
+            };
+            let (plain, tagged) = (with(false), with(true));
+            let p = layout(&legend, w, h, &labels, 0.5).unwrap();
+            for y in p.y..p.y + p.h {
+                for x in p.x..p.x + p.w {
+                    assert_eq!(tagged[y * w + x], plain[y * w + x], "{pos:?} size {size}: legend cell ({x}, {y}) untouched");
+                }
+            }
+            assert!(tagged != plain, "{pos:?}: tags still drawn outside the legend");
+        }
+    }
+
+    #[test]
     fn tags_hold_still_while_solids_grow_and_shrink() {
         let (w, h) = (200, 70);
         let anim = AnimParams::default();
@@ -1644,7 +1679,7 @@ mod tests {
             r.render(&scene, w, h, &RenderSettings { spp: 1, ..RenderSettings::default() });
             let view = r.view().unwrap();
             let boxes: Vec<(usize, usize)> = labels.iter().map(|l| tag_box(&tag_lines(l, false))).collect();
-            let a = place_tags(&mut sides, &view, w, h, &scene, &boxes, true, frame_aspect(&view));
+            let a = place_tags(&mut sides, &view, w, h, &scene, &boxes, true, frame_aspect(&view), None);
             assert!(a.iter().all(Option::is_some));
             match &first {
                 None => first = Some(a),

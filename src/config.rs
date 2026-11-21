@@ -156,6 +156,10 @@ pub struct Config {
     pub bg_rotate: Spin,
     /// Seconds per revolution.
     pub bg_rotate_period: f32,
+    /// Quasicrystal pattern: number of plane waves (3..=24; its symmetry).
+    pub bg_waves: u32,
+    /// Quasicrystal pattern: wave phase speed, radians/s (0 = still).
+    pub bg_wave_speed: f32,
 
     // --- animation ---
     pub min_scale: f32,
@@ -233,6 +237,8 @@ impl Default for Config {
             bg_sway_period: 10.0,
             bg_rotate: Spin::Off,
             bg_rotate_period: 60.0,
+            bg_waves: crate::scene::ground::WAVES_DEFAULT,
+            bg_wave_speed: crate::scene::ground::WAVE_SPEED_DEFAULT,
             min_scale: 0.45,
             max_scale: 1.0,
             max_spin: 3.0,
@@ -339,6 +345,8 @@ impl Config {
         self.bg_sway = finite_or(self.bg_sway, d.bg_sway).clamp(0.0, 100.0);
         self.bg_sway_period = finite_or(self.bg_sway_period, d.bg_sway_period).clamp(0.5, 86_400.0);
         self.bg_rotate_period = finite_or(self.bg_rotate_period, d.bg_rotate_period).clamp(0.5, 86_400.0);
+        self.bg_waves = self.bg_waves.clamp(crate::scene::ground::WAVES_MIN, crate::scene::ground::WAVES_MAX);
+        self.bg_wave_speed = finite_or(self.bg_wave_speed, d.bg_wave_speed).clamp(-20.0, 20.0);
         for v in [&mut self.orbit_radius, &mut self.orbit_height] {
             *v = v.filter(|x| x.is_finite()).map(|x| x.clamp(0.5, 500.0));
         }
@@ -375,6 +383,8 @@ impl Config {
             sway_period: self.bg_sway_period,
             rotate: self.bg_rotate,
             rotate_period: self.bg_rotate_period,
+            waves: self.bg_waves,
+            wave_speed: self.bg_wave_speed,
         }
     }
 

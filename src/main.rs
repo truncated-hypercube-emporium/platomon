@@ -182,7 +182,7 @@ struct Cli {
     /// Background luminosity 0..10: 5 = original, 0 = no background surface.
     #[arg(long, value_name = "0..10")]
     bg_lum: Option<f32>,
-    /// Background pattern: solid, checker, diamond, brick, triangles, hex, radial.
+    /// Background pattern: solid, checker, diamond, brick, triangles, hex, radial, quasicrystal.
     #[arg(long, value_name = "PATTERN")]
     bg_pattern: Option<Pattern>,
     /// Pattern tone spread around the luminosity, 0..1.
@@ -206,6 +206,12 @@ struct Cli {
     /// Seconds per background revolution.
     #[arg(long, value_name = "SECS")]
     bg_rotate_period: Option<f32>,
+    /// Quasicrystal background: number of plane waves, 3..24 (its rotational symmetry; default 7).
+    #[arg(long, value_name = "N")]
+    bg_waves: Option<u32>,
+    /// Quasicrystal background: wave phase speed in radians/s; 0 = still, negative = reverse (default 0.6).
+    #[arg(long, value_name = "RAD/S", allow_hyphen_values = true)]
+    bg_wave_speed: Option<f32>,
 }
 
 fn fail(msg: impl std::fmt::Display) -> ! {
@@ -218,7 +224,7 @@ fn apply_cli(cfg: &mut Config, cli: &Cli) -> Result<(), String> {
         ($($f:ident),*) => { $( if let Some(v) = cli.$f.clone() { cfg.$f = v; } )* };
     }
     set!(spp, bounces, fps_min, fps_max, ramp, char_aspect, aspect, aspect_mode, camera, orbit_period, orbit_dir, orbit_bob);
-    set!(bg_lum, bg_pattern, bg_contrast, bg_scale, bg_sway, bg_sway_period, bg_rotate, bg_rotate_period);
+    set!(bg_lum, bg_pattern, bg_contrast, bg_scale, bg_sway, bg_sway_period, bg_rotate, bg_rotate_period, bg_waves, bg_wave_speed);
     set!(legend_size, legend_opacity, legend_pos);
     set!(color, color_by, color_depth, layout, focus_zoom, focus_tau);
     if cli.color_reverse {
@@ -344,11 +350,11 @@ fn list(what: ListWhat) {
             println!("\nNAME: see --list sensors. Without NAME the busiest instance is used.");
         }
         ListWhat::Patterns => {
-            println!("{:<10} DESCRIPTION", "PATTERN");
+            println!("{:<13} DESCRIPTION", "PATTERN");
             for p in Pattern::ALL {
-                println!("{:<10} {}", p.id(), p.describe());
+                println!("{:<13} {}", p.id(), p.describe());
             }
-            println!("\nTiles alternate around --bg-lum by --bg-contrast; --bg-scale sets tile size.");
+            println!("\nTiles alternate around --bg-lum by --bg-contrast; --bg-scale sets tile size (the quasicrystal's wavelength).");
         }
         ListWhat::Gradients => {
             println!("{:<9} {:<32} DESCRIPTION", "GRADIENT", "SWATCH (24-bit)");

@@ -50,7 +50,7 @@ platomon [OPTIONS]
 | `--seed` | `U64`, makes `random` repeatable | random |
 | **Background** | | |
 | `--bg-lum` | `0..10`: 5 = original, **0 = no background surface** | 5 |
-| `--bg-pattern` | `solid\|checker\|diamond\|brick\|triangles\|hex\|radial` | `solid` |
+| `--bg-pattern` | `solid\|checker\|diamond\|brick\|triangles\|hex\|radial\|quasicrystal` | `solid` |
 | `--bg-contrast` | `0..1`, tile tone spread around `--bg-lum` | 0.5 |
 | `--bg-scale` | tile size, world units (a full-size solid is 2 across) | 1.0 |
 | `--bg-scroll` | `DX:DZ` world units/s, e.g. `0.5:0` or `-0.2:0.3` | `0:0` |
@@ -58,6 +58,8 @@ platomon [OPTIONS]
 | `--bg-sway-period` | seconds per sway cycle | 10 |
 | `--bg-rotate` | `off\|cw\|ccw`, about the camera's focal point (seen from above) | `off` |
 | `--bg-rotate-period` | seconds per revolution | 60 |
+| `--bg-waves` | quasicrystal: plane waves, 3..24 (its rotational symmetry) | 7 |
+| `--bg-wave-speed` | quasicrystal: wave phase speed, radians/s (0 = still, negative = reverse) | 0.6 |
 | **Overlays** | | |
 | `--legend` | flag: corner panel with a wireframe of each solid and its metric | off |
 | `--legend-size` | `1..5` font size: 1–2 terminal text, 3–5 block letters (1–3 cells per font pixel); icons grow with it | 2 |
@@ -169,6 +171,7 @@ each other. With `--bg-pattern solid` (the default) motion has nothing visible t
 | `triangles` | squares split on the diagonal, alternating |
 | `hex` | hexagonal tiles, three tones |
 | `radial` | rings × 12 sectors around the focal point |
+| `quasicrystal` | `--bg-waves` plane waves at evenly spaced angles, summed and folded into bands: a never-repeating, many-fold symmetric tiling that flows (`--bg-wave-speed`) |
 
 ### Legend and wireframe
 
@@ -305,6 +308,8 @@ platomon --bg-lum 0 --camera orbit                                     # no floo
 platomon --bg-lum 8 --bg-pattern checker --bg-contrast 0.8 --bg-scale 2
 platomon --bg-pattern hex --bg-scale 1.2 --bg-scroll 0.3:0.3           # three-tone hexes drifting diagonally
 platomon --bg-pattern brick --bg-sway 0.6 --bg-sway-period 6           # floor swaying in a slow circle
+platomon --bg-pattern quasicrystal --bg-lum 7 --bg-contrast 1 --bg-scale 3   # flowing 7-fold quasicrystal floor
+platomon --bg-pattern quasicrystal --bg-waves 5 --bg-wave-speed 0 --bg-rotate ccw  # still Penrose-like 5-fold floor, turning
 platomon --bg-pattern triangles --bg-scale 0.6 --bg-contrast 1 --bg-scroll -0.5:0
 platomon --bg-pattern radial --bg-rotate ccw --bg-rotate-period 20 --camera orbit --orbit-dir cw   # floor and camera turn against each other
 platomon --bg-pattern diamond --bg-rotate cw --bg-rotate-period 30 --bg-scroll 0.4:0 --bg-sway 0.5 # rotate, scroll and sway at once
