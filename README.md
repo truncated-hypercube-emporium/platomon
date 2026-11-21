@@ -40,6 +40,8 @@ platomon [OPTIONS]
 | `--aspect-mode` | `letterbox\|crop` | `letterbox` |
 | **Camera** | | |
 | `--camera` | `static\|orbit\|focus\|tilt\|resonance` (focus: glide toward the busiest solid; tilt: orbit while rising 20–80° and back; resonance: orbit with three 20° waves per turn) | `static` |
+| `--far-ground` | flag: extended floor, drawn 8x further out toward the horizon; past the normal distance it is shaded in closed form (averaged pattern, exact light, no sampling), about +0–0.4 ms per frame | off |
+| `--tag-fixed-length` | flag: tag leader lines keep one length, following each solid as it grows and shrinks, and only lengthen to keep a tag off another solid | off |
 | `--auto-distance` | flag: dynamic camera distance, moving in and out so every solid stays in frame (all cameras but focus) | off |
 | `--focus-zoom` | `0..1`: 0 = only turn toward the busiest solid, 1 = close-up | 0.6 |
 | `--focus-tau` | glide time constant, seconds | 1.5 |
@@ -99,6 +101,16 @@ and at the same time lifts along a vertical arc over the orbit point, from 20° 
 above the look-at point (never straight down at the floor), at the overview distance throughout.
 The rise takes one orbital period, easing in and out; at each end it holds for half a period while
 the orbit carries on, then travels back. It starts on its way up at the overview's elevation.
+
+### Floating solids and the extended floor
+
+Solids float above the floor at a fixed height (rings) or with the whole sphere lifted, so that
+even the largest sound halo (1.8x a solid's radius, the ±60% swing) stays clear of it; the camera
+aims correspondingly higher. `--far-ground` draws the floor 8x further out, filling the band of sky
+that wide layouts and low camera angles otherwise show at the horizon. Out there the pattern has
+already faded to its mean tone and no solid's shadow reaches, so instead of sampling the light,
+tracing shadow rays and bouncing, each far floor point gets the light's direct contribution in
+closed form plus the averaged sky term: about 0–0.4 ms per frame at 640×240 cells.
 
 ### Dynamic camera distance
 
@@ -240,7 +252,7 @@ spans the gap from the tag's inner corner to the solid's surface or wireframe. T
 the solid at full size, so they hold still while solids grow and shrink with their load and only
 move with the camera. Each tag box sits as close to its solid as it can while staying clear of it
 and of every other solid; when that diagonal is blocked it takes the other corner on the same side,
-never one toward the centre. Tags avoid each other and the edges of the picture, keep their corner until
+never one toward the centre. Leader lines never cross each other when any other spot allows it. Tags avoid each other and the edges of the picture, keep their corner until
 a solid is well past the centre, and are drawn over everything, legend included.
 
 With a colour gradient, `--tag-color` picks the tag colour: `complement` (default) uses the hue
