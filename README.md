@@ -27,7 +27,9 @@ platomon [OPTIONS]
 | `--show` | `METRIC[,METRIC…]`, max 16 | `cpu,ram,disk,net,gpu` |
 | `--solid` | `METRIC=SOLID`, repeatable | built-in mapping |
 | `--ring` | `METRIC=N`, repeatable (0 = innermost ring or shell) | automatic |
-| `--layout` | `rings` (on the ground) or `sphere` (concentric spherical shells) | `rings` |
+| `--layout` | `rings` (on the ground), `sphere` (concentric spherical shells), `line` (one evenly spaced row) or `stack` (one above another in the centre) | `rings` |
+| `--ordering` | which solid takes which place: `listed` (metric order), `simple` (simplest first), `complex` (most complex first) or `random` | `listed` |
+| `--spacing` | neighbour spacing as a multiple of the standard, 0.8–2.5 | `1` |
 | **Rendering** | | |
 | `--spp` | `N` (1–64) | 2 |
 | `--bounces` | `N` (0–8) | 2 |
@@ -127,6 +129,17 @@ camera keeps its own close-ups.
 elevation rises and falls sinusoidally three times over a 20° range centred on the overview's
 elevation, and its distance breathes ±8% in step, so the closed path is a three-lobed rosette that
 repeats every orbit.
+
+### Line and stack layouts, ordering and spacing
+
+`--layout line` puts the solids in one evenly spaced row along the ground, floating at the same
+height as the rings; `--layout stack` sets them one above another in the centre, the lowest lifted
+so its largest halo clears the floor, with the camera backed off to frame the column. `--ordering`
+decides which solid takes which place: `listed` keeps the metric order, `simple` puts the simplest
+solid (fewest edges, faces breaking ties) first and the most complex last, `complex` the reverse,
+and `random` shuffles them (the same for a given seed). The first place is the inner ring's front,
+the inner shell, the line's left end or the stack's bottom. `--spacing` scales the distance between
+neighbours (and between rings and shells).
 
 ### Sphere layout
 
