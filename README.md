@@ -40,6 +40,7 @@ platomon [OPTIONS]
 | `--aspect-mode` | `letterbox\|crop` | `letterbox` |
 | **Camera** | | |
 | `--camera` | `static\|orbit\|focus\|tilt\|resonance` (focus: glide toward the busiest solid; tilt: orbit while rising 20–80° and back; resonance: orbit with three 20° waves per turn) | `static` |
+| `--auto-distance` | flag: dynamic camera distance, moving in and out so every solid stays in frame (all cameras but focus) | off |
 | `--focus-zoom` | `0..1`: 0 = only turn toward the busiest solid, 1 = close-up | 0.6 |
 | `--focus-tau` | glide time constant, seconds | 1.5 |
 | `--orbit-period` | seconds per revolution | 60 |
@@ -98,6 +99,15 @@ and at the same time lifts along a vertical arc over the orbit point, from 20° 
 above the look-at point (never straight down at the floor), at the overview distance throughout.
 The rise takes one orbital period, easing in and out; at each end it holds for half a period while
 the orbit carries on, then travels back. It starts on its way up at the overview's elevation.
+
+### Dynamic camera distance
+
+`--auto-distance` (*Dynamic camera distance* in the screensaver) keeps every solid in frame by
+moving the camera in and out along its line to the look-at point. Each frame it finds the closest
+distance (0.35x to 3x the camera's own) at which every solid's bounding sphere, at its current size,
+fits inside the view with 10% to spare, and backs out at once when a solid would leave the frame but
+comes back in gently (1.5 s). It works with the static, orbit, tilt and resonance cameras; the focus
+camera keeps its own close-ups.
 
 ### Resonance camera
 
@@ -223,12 +233,14 @@ another solid, are hidden.
 ### Solid tags
 
 `--tags` (key `t`) labels every solid with its live reading (`__RAM 42%__`). Each tag travels with
-its solid, just above it on the diagonal toward the edge of the picture, with its text running
+its solid, on the diagonal pointing from the inside out: toward the picture's corner nearest the
+solid (up and left for a solid in the upper left quarter, and so on), with its text running
 outward and a short diagonal leader line (`/`, `\`, or `|` when steep; never horizontal) that only
 spans the gap from the tag's inner corner to the solid's surface or wireframe. Tags are placed for
 the solid at full size, so they hold still while solids grow and shrink with their load and only
 move with the camera. Each tag box sits as close to its solid as it can while staying clear of it
-and of every other solid; tags avoid each other and the edges of the picture, keep their side until
+and of every other solid; when that diagonal is blocked it takes the other corner on the same side,
+never one toward the centre. Tags avoid each other and the edges of the picture, keep their corner until
 a solid is well past the centre, and are drawn over everything, legend included.
 
 With a colour gradient, `--tag-color` picks the tag colour: `complement` (default) uses the hue
