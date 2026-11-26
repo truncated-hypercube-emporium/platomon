@@ -27,9 +27,17 @@ platomon [OPTIONS]
 | `--show` | `METRIC[,METRIC…]`, max 16 | `cpu,ram,disk,net,gpu` |
 | `--solid` | `METRIC=SOLID`, repeatable | built-in mapping |
 | `--ring` | `METRIC=N`, repeatable (0 = innermost ring or shell) | automatic |
-| `--layout` | `rings` (on the ground), `sphere` (concentric spherical shells), `line` (one evenly spaced row) or `stack` (one above another in the centre) | `rings` |
+| `--bind` | `SHAPE\|SIZE\|SPIN\|COLOUR\|COMPLEXITY`, repeatable, max 12: one solid with its own inputs, replacing `--show` (see *Per-solid inputs*) | off |
+| `--delta-period` | seconds a `delta:` input measures the change over, 1–600 | `10` |
+| `--layout` | `rings` (on the ground), `sphere` (concentric spherical shells), `line` (one evenly spaced row), `stack` (one above another in the centre) or `orbit` (one solid in the centre, the others orbiting it) | `rings` |
 | `--ordering` | which solid takes which place: `listed` (metric order), `simple` (simplest first), `complex` (most complex first) or `random` | `listed` |
-| `--spacing` | neighbour spacing as a multiple of the standard, 0.8–2.5 | `1` |
+| `--spacing` | neighbour spacing as a multiple of the standard, 0.25–4 (orbits: 10% × this of their radius apart) | `1` |
+| `--distance-scale` | each solid's size times 1 + N × (nearest neighbour's distance ÷ standard spacing − 1), −2–2; 0 = off | `0` |
+| `--orbit-center` | orbit layout: the solid in the centre, `cpu`, `ram`, `net`, `disk`, `size` (largest now) or `spin` (fastest now) | `cpu` |
+| `--orbit-velocity` | orbit layout: angular speed of the innermost orbit, radians/s, 0.05–2 | `0.35` |
+| `--orbit-inclination` | orbit layout: tilt of the orbits, degrees, 0–90 | `15` |
+| `--orbit-eccentricity` | orbit layout: 0 = circles, up to 0.8 = long ellipses | `0.15` |
+| `--orbit-variation` | orbit layout: how much each orbit's spacing, speed, tilt, shape and direction differ, 0–1 | `0.3` |
 | **Rendering** | | |
 | `--spp` | `N` (1–64) | 2 |
 | `--bounces` | `N` (0–8) | 2 |
@@ -43,7 +51,8 @@ platomon [OPTIONS]
 | **Camera** | | |
 | `--camera` | `static\|orbit\|focus\|tilt\|resonance` (focus: glide toward the busiest solid; tilt: orbit while rising 20–80° and back; resonance: orbit with three 20° waves per turn) | `static` |
 | `--far-ground` | flag: extended floor, drawn 8x further out toward the horizon; past the normal distance it is shaded in closed form (averaged pattern, exact light, no sampling), about +0–0.4 ms per frame | off |
-| `--tag-fixed-length` | flag: tag leader lines keep one length, following each solid as it grows and shrinks, and only lengthen to keep a tag off another solid | off |
+| `--tag-fixed-length` | flag (beside, below and trailing tags): tag leader lines keep one length, following each solid as it grows and shrinks, and only lengthen to keep a tag off another solid | off |
+| `--tag-place` | where tags go: `circle` (round the picture's centre, nearest each solid), `beside`, `corner` (stacked in the corners), `below` or `trailing` (behind moving solids) | `circle` |
 | `--auto-distance` | flag: dynamic camera distance, moving in and out so every solid stays in frame (all cameras but focus) | off |
 | `--focus-zoom` | `0..1`: 0 = only turn toward the busiest solid, 1 = close-up | 0.6 |
 | `--focus-tau` | glide time constant, seconds | 1.5 |
@@ -55,16 +64,26 @@ platomon [OPTIONS]
 | `--seed` | `U64`, makes `random` repeatable | random |
 | **Background** | | |
 | `--bg-lum` | `0..10`: 5 = original, **0 = no background surface** | 5 |
-| `--bg-pattern` | `solid\|checker\|diamond\|brick\|triangles\|hex\|radial\|quasicrystal` | `solid` |
+| `--bg-pattern` | `solid\|checker\|diamond\|brick\|triangles\|hex\|radial\|quasicrystal\|rain\|ocean\|julia\|carpet\|clouds\|polka` | `solid` |
 | `--bg-contrast` | `0..1`, tile tone spread around `--bg-lum` | 0.5 |
 | `--bg-scale` | tile size, world units (a full-size solid is 2 across) | 1.0 |
-| `--bg-scroll` | `DX:DZ` world units/s, e.g. `0.5:0` or `-0.2:0.3` | `0:0` |
+| `--bg-scroll` | `DX:DY` world units/s across the floor (the x, y plane; z is up, +y away from the camera's starting view), e.g. `0.5:0` or `-0.2:0.3` | `0:0` |
 | `--bg-sway` | radius of a circular back-and-forth translation; 0 = off | 0 |
 | `--bg-sway-period` | seconds per sway cycle | 10 |
 | `--bg-rotate` | `off\|cw\|ccw`, about the camera's focal point (seen from above) | `off` |
 | `--bg-rotate-period` | seconds per revolution | 60 |
 | `--bg-waves` | quasicrystal: plane waves, 3..24 (its rotational symmetry) | 7 |
-| `--bg-wave-speed` | quasicrystal: wave phase speed, radians/s (0 = still, negative = reverse) | 0.6 |
+| `--bg-wave-speed` | flow of the moving patterns: the quasicrystal's wave phase speed, radians/s (0 = still, negative = reverse); rain, ocean, julia and clouds move in proportion (0.6 = their natural pace) | 0.6 |
+| `--bg-drops` | rain: raindrops rippling at once, 1..48 | 12 |
+| `--bg-ripple`, `--bg-drop-life` | rain: distance between ripples (tiles); seconds a drop's rings last | 0.9, 4.5 |
+| `--bg-wind`, `--bg-chop` | ocean: wind direction (degrees); crest sharpness (0 = plain sine waves) | 30, 0.6 |
+| `--bg-julia-shape`, `--bg-julia-iter` | julia: radius of the circle the constant drifts round; iterations (edge detail) | 0.7885, 28 |
+| `--bg-carpet-levels` | carpet: sizes of square cut out | 5 |
+| `--bg-octaves`, `--bg-roughness` | clouds: noise octaves; each finer octave's strength | 5, 0.5 |
+| `--bg-sectors` | radial: sectors round the focal point | 12 |
+| `--bg-dot-size`, `--bg-dot-spacing` | polka: each dot's size across and the distance between neighbouring dots, tiles | 0.5, 1 |
+| `--bg-dot-variability` | polka: how much dot sizes and places vary, 0..1 (sizes from none to twice `--bg-dot-size`, each dot moved off its lattice point by up to half the spacing) | 0 |
+| `--bg-invert-half` | polka: swap light and dark on one side of a line through the centre (the line turns with the floor, but doesn't scroll or sway) | off |
 | **Overlays** | | |
 | `--legend` | flag: corner panel with a wireframe of each solid and its metric | off |
 | `--legend-size` | `1..5` font size: 1–2 terminal text, 3–5 block letters (1–3 cells per font pixel); icons grow with it | 2 |
@@ -114,6 +133,16 @@ already faded to its mean tone and no solid's shadow reaches, so instead of samp
 tracing shadow rays and bouncing, each far floor point gets the light's direct contribution in
 closed form plus the averaged sky term: about 0–0.4 ms per frame at 640×240 cells.
 
+**Seen from far above.** The floor's reach (`max_dist` in the config file;
+50 by default, 8x with the extended floor) is a radius round the scene's centre measured across the floor, not a distance along each
+ray, so a camera high above the floor (a large orbit height, the dynamic camera distance backing
+out) sees the same floor as one near it; before, a camera more than 50 away lost the floor and then
+the solids too. Solids are found however far away the camera is. The floor's outer 15% fades into
+the background, so its edge is soft rather than a ragged circle. Patterns fade to their mean tone
+by how much floor each character cell covers: the cell's angle (from the field of view and the
+rendering resolution, so finer text keeps finer tiles) times the distance, stretched at grazing
+angles, which removes the moiré and flicker where tiles shrink below a cell toward the horizon or
+seen from high up.
 ### Dynamic camera distance
 
 `--auto-distance` (*Dynamic camera distance* in the screensaver) keeps every solid in frame by
@@ -140,6 +169,38 @@ solid (fewest edges, faces breaking ties) first and the most complex last, `comp
 and `random` shuffles them (the same for a given seed). The first place is the inner ring's front,
 the inner shell, the line's left end or the stack's bottom. `--spacing` scales the distance between
 neighbours (and between rings and shells).
+
+`--distance-scale N` (−2 to 2, default 0 = off) sizes each solid by the room around it: its size is
+multiplied by 1 + N × (d ÷ the standard spacing − 1), where d is the distance to its nearest
+neighbour, clamped to 0.2×–2.5×. A solid exactly the standard spacing from its neighbour keeps its
+size; with a positive N, solids with more room grow and crowded ones shrink, and a negative N does
+the reverse. It works in every layout (wider `--spacing` gives it more to work with); in the orbit
+layout the distances change as the solids move, so their sizes change smoothly with them. Floating
+heights and camera framing allow for the largest size it can give.
+
+### Orbit layout
+
+`--layout orbit` puts one solid, the reference, in the centre and the others on orbits around it,
+each orbit 10% of its radius larger than the one inside it (`--spacing` stretches that: 2 = 20%,
+0.5 = 5%). `--orbit-center` picks
+the reference: `cpu`, `ram`, `net` or `disk` (that metric's solid; a network adapter or disk device
+when the main one isn't shown) holds the centre for the whole run; `size` gives it to whichever
+solid is largest at the moment and `spin` to whichever spins fastest. A solid that has led by a
+clear margin for 1.5 s takes over: it glides in to the centre and the old reference glides back out
+onto its orbit on a critically damped spring (about two seconds, no overshoot), so nothing jumps.
+
+The orbits are Kepler ellipses, and solids move along them by Kepler's equation: they speed up as
+they swing in close to the centre and slow down far out, smoothly. `--orbit-velocity` is the
+innermost orbit's angular speed in radians per second (default 0.35, about 18 s per turn); outer
+orbits are slower, as the square root of their size. `--orbit-inclination` tilts the orbits from
+the floor (degrees, 0 = flat, 90 = upright), and `--orbit-eccentricity` stretches them from circles
+(0) to long ellipses (0.8); every orbit's closest point stays a full solid spacing clear of the
+centre. `--orbit-variation` (0..1) spreads the other settings: at 0 every orbit lies in one plane
+with one shape, and toward 1 each orbit gets its own size step, speed (±60%), tilt (±30°),
+eccentricity (±0.3), orientation and starting point (the same for a given seed). The centre is
+raised so the lowest point of any orbit keeps the largest halo clear of the floor, and the camera
+backs off further the steeper the orbits tilt. Orbits may cross, so two solids can briefly pass
+through each other.
 
 ### Sphere layout
 
@@ -240,6 +301,12 @@ each other. With `--bg-pattern solid` (the default) motion has nothing visible t
 | `hex` | hexagonal tiles, three tones |
 | `radial` | rings × 12 sectors around the focal point |
 | `quasicrystal` | `--bg-waves` plane waves at evenly spaced angles, summed and folded into bands: a never-repeating, many-fold symmetric tiling that flows (`--bg-wave-speed`) |
+| `rain` | a raindrop simulation: `--bg-drops` drops land at random places, each sending out a ring of ripples (a short wave train behind a front spreading at about 1.4 tiles/s, ripples 0.9 tiles apart) that weakens as it spreads and fades over its 3–6 s life, when a new drop lands somewhere else; overlapping rings add up |
+| `ocean` | an approximate ocean surface: 12 waves round a random wind direction, wavelengths from 4 tiles down by a factor 0.76, taller the longer, each moving at its deep-water speed (√(g/k): long swells overtake short chop), with sharpened crests and flat troughs |
+| `julia` | the Julia set fractal (4 tiles per unit), in bands by how fast points escape, its constant drifting slowly round a circle of radius 0.7885 so the set keeps changing shape |
+| `carpet` | the Sierpinski carpet fractal: squares cut out at five scales, the smallest a third of a tile |
+| `clouds` | fractal (Brownian) noise: five octaves of value noise, each twice as fine and half as strong, drifting |
+| `polka` | polka dots `--bg-dot-size` across on a triangular lattice `--bg-dot-spacing` apart (rows offset half a spacing, each dot with six equidistant neighbours); `--bg-dot-variability` spreads both (random sizes, dots nudged off the lattice); `--bg-invert-half` inverts one half of the floor, dark dots on light. Dots much smaller than a tile fade to the floor's mean tone sooner with distance, so they don't flicker |
 
 ### Legend and wireframe
 
@@ -300,6 +367,32 @@ Every metric here works on Linux, macOS and Windows with any GPU vendor. Metrics
 systems or vendors can't provide were left out: temperatures, CPU frequency (Windows reports a fixed
 base clock), and GPU clocks/PCIe throughput (NVIDIA only). When a metric is unavailable on a
 particular machine, its solid sits at minimum scale with idle spin and the stats bar shows `n/a`.
+
+### Per-solid inputs
+
+Normally each solid's metric drives its size, spin and colour. With `--bind` (or `bindings = [...]`
+in the config file) each solid gets its own inputs instead,
+written `SHAPE|SIZE|SPIN|COLOUR|COMPLEXITY`:
+
+- `SHAPE`: a solid id, or `auto` (the metric's own solid while it is free, else the first free one).
+- Each input: a metric (`cpu`, `nic:Ethernet`, ...), `delta:METRIC`, or `off`. Missing spin and
+  colour inputs follow size, and a missing complexity input is off.
+- **Size** sets the solid's size (off: always the smallest). **Spin** sets its spin (off: idle
+  spin). **Colour** sets its colour when colouring by load (off: the gradient's start).
+- **Complexity** changes the solid's shape: at rest it is `SHAPE` (the tetrahedron for `auto`), and
+  more load steps it up through solids with more edges, to the most complex at full load. It only
+  steps once the input is well past the middle between two shapes, so it does not flicker.
+- **`delta:`** uses how much the metric changed over the delta period (`--delta-period`, 10 s by
+  default) instead of its value: the difference from the value that long ago, scaled to the largest
+  change lately (which fades by 2% a second, never below 5% of the range). A steady load reads as 0,
+  and a rise or fall as up to 1.
+
+Several solids can share a metric, and a metric is read once however many solids use it. The tag,
+the orbit centre and the activity weight follow a solid's size input (else its first input).
+
+```powershell
+platomon --bind "auto|cpu" --bind "cube|ram|delta:ram|ram" --bind "auto|delta:net|net|delta:net|cpu" --delta-period 30
+```
 
 ### Solids
 
@@ -380,6 +473,9 @@ platomon --bg-pattern hex --bg-scale 1.2 --bg-scroll 0.3:0.3           # three-t
 platomon --bg-pattern brick --bg-sway 0.6 --bg-sway-period 6           # floor swaying in a slow circle
 platomon --bg-pattern quasicrystal --bg-lum 7 --bg-contrast 1 --bg-scale 3   # flowing 7-fold quasicrystal floor
 platomon --bg-pattern quasicrystal --bg-waves 5 --bg-wave-speed 0 --bg-rotate ccw  # still Penrose-like 5-fold floor, turning
+platomon --bg-pattern rain --bg-lum 7 --bg-contrast 1 --bg-drops 20        # a shower of ripples
+platomon --bg-pattern ocean --bg-lum 6 --bg-contrast 0.9 --bg-scale 2      # rolling swell
+platomon --bg-pattern julia --bg-lum 7 --bg-contrast 1 --bg-wave-speed 2   # a Julia set changing shape quickly
 platomon --bg-pattern triangles --bg-scale 0.6 --bg-contrast 1 --bg-scroll -0.5:0
 platomon --bg-pattern radial --bg-rotate ccw --bg-rotate-period 20 --camera orbit --orbit-dir cw   # floor and camera turn against each other
 platomon --bg-pattern diamond --bg-rotate cw --bg-rotate-period 30 --bg-scroll 0.4:0 --bg-sway 0.5 # rotate, scroll and sway at once
