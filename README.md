@@ -4,8 +4,7 @@ A terminal system monitor: one path-traced polyhedron per metric, rendered in mo
 concentric rings. Each solid's scale and spin follow its metric; the frame rate (5–150 fps) follows
 total activity.
 
-Keys: `s` toggles the stats bar, `l` the legend, `w` the wireframe overlay, `t` the solid tags; `q` / `Esc` /
-`Ctrl-C` quit.
+Keys: `s` toggles the stats bar, `l` the legend, `w` the wireframe overlay, `t` the tags, `F1` the debug panel over the left half of the picture (the command line, version and build features, frame rate against its target, render, compose and write times with their peaks, the quality governor's level and load, the renderer in use, CPU or GPU, and the scene and look options); `q` / `Esc` / `Ctrl-C` quit.
 
 ## Launch parameters
 
@@ -27,8 +26,10 @@ platomon [OPTIONS]
 | `--show` | `METRIC[,METRIC…]`, max 16 | `cpu,ram,disk,net,gpu` |
 | `--solid` | `METRIC=SOLID`, repeatable | built-in mapping |
 | `--ring` | `METRIC=N`, repeatable (0 = innermost ring or shell) | automatic |
-| `--bind` | `SHAPE\|SIZE\|SPIN\|COLOUR\|COMPLEXITY`, repeatable, max 12: one solid with its own inputs, replacing `--show` (see *Per-solid inputs*) | off |
+| `--bind` | `SHAPE\|SIZE\|SPIN\|COLOUR\|COMPLEXITY[\|CURVATURE]`, repeatable, max 12: one solid with its own inputs, replacing `--show` (see *Per-solid inputs*) | off |
 | `--delta-period` | seconds a `delta:` input measures the change over, 1–600 | `10` |
+| `--curvature` | -10..10: the curvature of every solid that sets none of its own (-10 dished faces, hyperboloid-like; 0 flat; 10 spherical) | `0` |
+| `--split-cpu` | one solid per logical core for each solid the whole CPU drives (32 solids at most) | off |
 | `--layout` | `rings` (on the ground), `sphere` (concentric spherical shells), `line` (one evenly spaced row), `stack` (one above another in the centre) or `orbit` (one solid in the centre, the others orbiting it) | `rings` |
 | `--ordering` | which solid takes which place: `listed` (metric order), `simple` (simplest first), `complex` (most complex first) or `random` | `listed` |
 | `--spacing` | neighbour spacing as a multiple of the standard, 0.25–4 (orbits: 10% × this of their radius apart) | `1` |
@@ -45,11 +46,13 @@ platomon [OPTIONS]
 | `--fps-invert` | flag: idle runs at `--fps-max`, full load at `--fps-min` | off |
 | `--ramp` | `STR`, darkest first (any length ≥ 2) | `" .,:;-~=+*ox#%&@"` (16 levels) |
 | `--char-aspect` | cell width ÷ height | 0.5 |
+| `--gpu` | flag: **Space heater**, render on the GPU through Vulkan 1.1 (builds with `--features gpu`); every floor pattern (PCs without Vulkan render on the CPU); `--snapshot` says on stderr which device rendered it and how long it took | off |
 | **Display ratio** | | |
 | `--aspect` | `fill`, preset or `W:H` | `fill` |
 | `--aspect-mode` | `letterbox\|crop` | `letterbox` |
 | **Camera** | | |
 | `--camera` | `static\|orbit\|focus\|tilt\|resonance` (focus: glide toward the busiest solid; tilt: orbit while rising 20–80° and back; resonance: orbit with three 20° waves per turn) | `static` |
+| `--no-floor-clearance` | flag: solids rest just above the floor instead of floating so their largest halo clears it | off |
 | `--far-ground` | flag: extended floor, drawn 8x further out toward the horizon; past the normal distance it is shaded in closed form (averaged pattern, exact light, no sampling), about +0–0.4 ms per frame | off |
 | `--tag-fixed-length` | flag (beside, below and trailing tags): tag leader lines keep one length, following each solid as it grows and shrinks, and only lengthen to keep a tag off another solid | off |
 | `--tag-place` | where tags go: `circle` (round the picture's centre, nearest each solid), `beside`, `corner` (stacked in the corners), `below` or `trailing` (behind moving solids) | `circle` |
@@ -127,7 +130,9 @@ the orbit carries on, then travels back. It starts on its way up at the overview
 
 Solids float above the floor at a fixed height (rings) or with the whole sphere lifted, so that
 even the largest sound halo (1.8x a solid's radius, the ±60% swing) stays clear of it; the camera
-aims correspondingly higher. `--far-ground` draws the floor 8x further out, filling the band of sky
+aims correspondingly higher. This is the *minimum floor distance* (on by default; `--no-floor-clearance`,
+`floor_clearance=off` or the setting in the Appearance group turn it off): off, the solids rest just
+above the floor at any size (they never touch it, but a large halo can dip into it). `--far-ground` draws the floor 8x further out, filling the band of sky
 that wide layouts and low camera angles otherwise show at the horizon. Out there the pattern has
 already faded to its mean tone and no solid's shadow reaches, so instead of sampling the light,
 tracing shadow rays and bouncing, each far floor point gets the light's direct contribution in
@@ -351,28 +356,45 @@ font is only a few pixels high:
 
 | Metric | Scale | Spin | Default solid |
 |---|---|---|---|
-| `cpu` | utilisation (minus platomon's own) | utilisation | icosahedron |
+| `cpu[:N]` | utilisation (minus platomon's own); `cpu:N` one logical core | utilisation | icosahedron |
 | `ram` | used ÷ total | rate of change | cube |
 | `disk` | all disks, read+write | Y = read, X = write | octahedron |
 | `net` | all adapters, rx+tx | Y = rx, X = tx | tetrahedron |
 | `gpu` | busiest GPU's utilisation | memory-controller util, else utilisation | dodecahedron |
 | `nic[:NAME]` | one adapter, rx+tx | Y = rx, X = tx | rhombic-dodecahedron |
 | `disk-dev[:NAME]` | one disk/volume, read+write | Y = read, X = write | truncated-cube |
+| `cpu-temp`, `gpu-temp` | temperature, 30 °C → 0 to 95 °C → 1 | temperature | truncated-tetrahedron, truncated-dodecahedron |
+| `cpu-freq`, `gpu-freq` | clock ÷ the most it reaches (the CPU's nominal clock, the GPU's rated maximum, else 1 GHz, raised by any higher clock seen) | clock | cuboctahedron, icosidodecahedron |
+| `cpu-volt`, `gpu-volt` | core voltage across the range seen since the start (at least 0.25 V wide) | voltage | truncated-octahedron, rhombic-triacontahedron |
 
 `nic` and `disk-dev` without a name follow the busiest instance and can appear several times with
 different names. `platomon --list sensors` shows the names this machine has. Disks also match by
 mount point, e.g. `disk-dev:C:\` or `disk-dev:/home`.
 
-Every metric here works on Linux, macOS and Windows with any GPU vendor. Metrics that some operating
-systems or vendors can't provide were left out: temperatures, CPU frequency (Windows reports a fixed
-base clock), and GPU clocks/PCIe throughput (NVIDIA only). When a metric is unavailable on a
+The first seven work on Linux, macOS and Windows with any GPU vendor. The temperatures, clocks and
+voltages depend on what the machine reports:
+
+| | Windows | Linux |
+|---|---|---|
+| CPU temperature | LibreHardwareMonitor / OpenHardwareMonitor (package temperature) while it runs, else the hottest ACPI thermal zone (many desktops have none) | thermal zones, `k10temp` / `coretemp` |
+| CPU clock | PDH: nominal clock × *% Processor Performance* (so boost shows) | the cores' mean clock |
+| CPU voltage | LibreHardwareMonitor / OpenHardwareMonitor only (the CPU's core voltage, else the motherboard's Vcore) | hwmon `Vcore` |
+| GPU temperature, clock | NVIDIA: NVML. AMD: the driver's ADL (Overdrive 8 on Navi and later, 5/6 on older GCN such as the HD 7000s). Else the hardware monitor | `amdgpu` hwmon |
+| GPU voltage | AMD: ADL. Else the hardware monitor (NVIDIA reports none) | `amdgpu` hwmon |
+
+`platomon --list sensors` prints what this machine gives. When a metric is unavailable on a
 particular machine, its solid sits at minimum scale with idle spin and the stats bar shows `n/a`.
+
+**Split CPU** (`--split-cpu`, or `split_cpu = true` in the config file): every
+solid driven by the whole CPU becomes one solid per logical core (`cpu:0`, `cpu:1`, ...), alike in
+shape and in its other inputs; their tags read `CPU0 12%`, `CPU1 40%`. Platomon's own share comes off
+each core alike. At most 32 solids in all: with more cores than fit, the first cores that do.
 
 ### Per-solid inputs
 
 Normally each solid's metric drives its size, spin and colour. With `--bind` (or `bindings = [...]`
 in the config file) each solid gets its own inputs instead,
-written `SHAPE|SIZE|SPIN|COLOUR|COMPLEXITY`:
+written `SHAPE|SIZE|SPIN|COLOUR|COMPLEXITY[|CURVATURE]`:
 
 - `SHAPE`: a solid id, or `auto` (the metric's own solid while it is free, else the first free one).
 - Each input: a metric (`cpu`, `nic:Ethernet`, ...), `delta:METRIC`, or `off`. Missing spin and
@@ -382,6 +404,15 @@ written `SHAPE|SIZE|SPIN|COLOUR|COMPLEXITY`:
 - **Complexity** changes the solid's shape: at rest it is `SHAPE` (the tetrahedron for `auto`), and
   more load steps it up through solids with more edges, to the most complex at full load. It only
   steps once the input is well past the middle between two shapes, so it does not flicker.
+- **Curvature** (the optional sixth field) bends the solid's faces, from -10 to +10. 0 is the
+  flat-faced solid. Toward +10 the faces bulge out until, at +10, it is the sphere through its
+  corners. Toward -10 each face is dished in by a sphere through its corners, so the faces cave in
+  and the edges pinch into concave arcs (hyperboloid-like); at -10 a dish is 60% of the way to the
+  centre (or 80% of the face's corner radius, whichever is less). `VALUE` alone is fixed;
+  `VALUE@INPUT` (`-8@cpu-temp`, `10@delta:gpu`) is flat while the input is idle and reaches
+  `VALUE` at full load, following it every frame; `VALUE@INPUT@both` sweeps both ways, `-VALUE` while idle to `VALUE`
+  at full load. `--curvature` sets it for every solid that sets none of its own. Both stay true distance bounds, so curved solids march, shadow and render on
+  the GPU like flat ones; a dished solid costs about twice a flat one to trace.
 - **`delta:`** uses how much the metric changed over the delta period (`--delta-period`, 10 s by
   default) instead of its value: the difference from the value that long ago, scaled to the largest
   change lately (which fades by 2% a second, never below 5% of the range). A steady load reads as 0,
@@ -392,6 +423,7 @@ the orbit centre and the activity weight follow a solid's size input (else its f
 
 ```powershell
 platomon --bind "auto|cpu" --bind "cube|ram|delta:ram|ram" --bind "auto|delta:net|net|delta:net|cpu" --delta-period 30
+platomon --bind "auto|cpu|cpu|cpu|off|10@cpu" --bind "cube|gpu|gpu|gpu|off|-8@gpu-temp" --curvature 4
 ```
 
 ### Solids

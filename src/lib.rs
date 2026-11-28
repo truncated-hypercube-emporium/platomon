@@ -9,7 +9,10 @@ pub mod clock;
 pub mod color;
 pub mod collector;
 pub mod config;
+pub mod debug;
 pub mod drive;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod metrics;
 pub mod overlay;
 pub mod render;
